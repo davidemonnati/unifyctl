@@ -54,4 +54,6 @@ dkms.conf
 # debug information files
 *.dwo
 
+.DS_Store
 prompt.md
+/build/
