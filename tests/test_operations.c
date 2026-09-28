@@ -38,7 +38,8 @@ static size_t writes(const struct mock *m, uint8_t reg, uint8_t first) {
 
 static void prepare_add(struct mock *m) {
     mock_snapshot(m, 1, false);
-    const uint8_t flags[] = {0x10, 0xff, 0x81, 0x00, 0x10, 0x08, 0x00};
+    /* Receiver reported by the user: wireless on, software present off. */
+    const uint8_t flags[] = {0x10, 0xff, 0x81, 0x00, 0x00, 0x01, 0x00};
     mock_report(m, flags, sizeof(flags));
     mock_ack(m, 0x00);
 }
@@ -76,8 +77,8 @@ static void test_pair_success(void) {
         assert(contains(ui.output, "New stored pairing"));
         assert(m.position == m.count);
         assert(writes(&m, 0xb2, 1) == 1 && writes(&m, 0xb2, 2) == 1);
-        assert(m.sent[7].bytes[4] == 0x10 && m.sent[7].bytes[5] == 0x09);
-        assert(m.sent[m.sends - 1].bytes[4] == 0x10 && m.sent[m.sends - 1].bytes[5] == 0x08);
+        assert(m.sent[7].bytes[4] == 0x00 && m.sent[7].bytes[5] == 0x09);
+        assert(m.sent[m.sends - 1].bytes[4] == 0x00 && m.sent[m.sends - 1].bytes[5] == 0x01);
         ui_close(&ui);
     }
 }
@@ -184,6 +185,80 @@ static void test_pair_unverified_and_cleanup_failure(void) {
     ui_close(&ui);
 }
 
+/* Hardware trace supplied by the user: pairing completes, but the first
+ * occupancy query sees an extended-record response (selector 0x30) instead.
+ * Serial bytes are anonymized. Timings and later verification are synthetic. */
+static void paired_trace(struct mock *m) {
+    mock_snapshot(m, 0, false);
+    const uint8_t flags[] = {0x10, 0xff, 0x81, 0, 0, 9, 0};
+    const uint8_t open[] = {0x10, 0xff, 0x4a, 1, 0, 0, 0};
+    const uint8_t offline[] = {0x10, 1, 0x41, 4, 0x72, 0x82, 0x40};
+    const uint8_t dj_link[15] = {0x20, 1, 0x42, 1};
+    const uint8_t dj_pair[15] = {0x20, 1, 0x41, 0, 0x82, 0x40, 6};
+    const uint8_t extended[20] = {0x11, 0xff, 0x83, 0xb5, 0x30, 0x12, 0x34, 0x56, 0x78, 6, 0, 0, 0, 1};
+    const uint8_t online[] = {0x10, 1, 0x41, 4, 0xb2, 0x82, 0x40};
+    const uint8_t dj_online[15] = {0x20, 1, 0x42, 0};
+    const uint8_t feature[20] = {0x11, 1, 4, 0, 1, 1, 1};
+    const uint8_t battery[20] = {0x11, 1, 8, 0, 0x64, 0x32};
+    mock_report(m, flags, sizeof(flags));
+    mock_report(m, open, sizeof(open));
+    mock_ack(m, 0xb2);
+    mock_report(m, offline, sizeof(offline));
+    mock_report(m, dj_link, sizeof(dj_link));
+    mock_report(m, dj_pair, sizeof(dj_pair));
+    close_notification(m, 0);
+    mock_report(m, extended, sizeof(extended));
+    mock_report(m, online, sizeof(online));
+    mock_report(m, dj_online, sizeof(dj_online));
+    mock_report(m, feature, sizeof(feature));
+    mock_report(m, battery, sizeof(battery));
+    mock_report(m, battery, sizeof(battery));
+}
+
+static void test_pair_verification_retry(void) {
+    struct mock m = {0};
+    paired_trace(&m);
+    size_t start = m.count;
+    mock_snapshot(&m, 1, false);
+    m.events[start].report.bytes[8] = 0x82;
+    size_t metadata = m.count;
+    mock_slot(&m, 1, true, true);
+    m.events[metadata].report.bytes[8] = 0x82;
+    mock_ack(&m, 0xb2);
+    for (size_t i = start; i < m.count; i++) m.events[i].at = 2100;
+    struct hidpp h = mock_session(&m);
+    struct operation_ui ui = ui_open(false, false, NULL);
+    struct error err = {0};
+    assert(operation_add(&h, 30, &ui, &err) == UC_OK);
+    assert(contains(ui.output, "New stored pairing"));
+    assert(contains(ui.output, "4082") && contains(ui.output, "connected"));
+    assert(!contains(ui.diagnostics, "verification failed"));
+    assert(writes(&m, 0xb2, 1) == 1 && writes(&m, 0xb2, 2) == 1);
+    assert(m.position == m.count && m.now == 2100);
+    assert(!h.pending && !h.poisoned && !h.retry_pairing_reads);
+    const uint8_t read_slot_one[] = {0x10, 0xff, 0x83, 0xb5, 0x20, 0, 0};
+    assert(m.sent[8].length == sizeof(read_slot_one));
+    assert(!memcmp(m.sent[8].bytes, read_slot_one, sizeof(read_slot_one)));
+    assert(!memcmp(m.sent[8].bytes, m.sent[9].bytes, sizeof(read_slot_one)));
+    ui_close(&ui);
+}
+
+static void test_pair_verification_exhausted(void) {
+    struct mock m = {0};
+    paired_trace(&m); /* No matching stored record ever arrives. */
+    struct hidpp h = mock_session(&m);
+    struct operation_ui ui = ui_open(false, false, NULL);
+    struct error err = {0};
+    assert(operation_add(&h, 30, &ui, &err) == UC_TIMEOUT);
+    assert(!contains(ui.output, "New stored pairing"));
+    assert(contains(ui.diagnostics, "receiver reported successful pairing"));
+    assert(!contains(ui.diagnostics, "closure attempted"));
+    assert(writes(&m, 0xb2, 1) == 1 && writes(&m, 0xb2, 2) == 0);
+    assert(m.sends == 10 && m.now == 4000 && h.poisoned);
+    assert(!h.retry_pairing_reads);
+    ui_close(&ui);
+}
+
 static void test_remove_confirmation(void) {
     const char *answers[] = {"n\n", "\n", "YES\n", "", "y\n"};
     for (size_t i = 0; i < sizeof(answers) / sizeof(answers[0]); i++) {
@@ -261,6 +336,8 @@ int main(void) {
     test_pair_failures();
     test_pair_interruption();
     test_pair_unverified_and_cleanup_failure();
+    test_pair_verification_retry();
+    test_pair_verification_exhausted();
     test_remove_confirmation();
     test_remove_failures();
     puts("Operations: pairing, cancellation, cleanup, confirmation and removal tests passed");

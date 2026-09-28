@@ -66,11 +66,19 @@ int hidpp_request(struct hidpp *h, uint8_t op, uint8_t reg,
     if (h->pending || h->poisoned) return fail(err, UC_PROTOCOL, 0, 0, "HID++ session unavailable after an incomplete transaction");
     if (op != 0x80 && op != 0x81 && op != 0x83) return fail(err, UC_INTERNAL, 0, 0, "unsupported internal request");
     uint8_t request[HIDPP_SHORT] = {0x10, 0xff, op, reg, params[0], params[1], params[2]};
-    int64_t deadline = h->io.now(h->io.context) + 2000;
+    unsigned attempts = h->retry_pairing_reads && op == 0x83 && reg == 0xb5 &&
+                        selector >= 0 && selector == params[0] ? 2u : 1u;
+    unsigned attempt = 0;
+    int64_t deadline;
+    int status;
+    bool sent;
+retry:
+    deadline = h->io.now(h->io.context) + 2000;
     if (h->deadline && deadline > h->deadline) deadline = h->deadline;
     h->pending = true;
     trace(h, "TX", request, sizeof(request));
-    int status = h->io.send(h->io.context, request, sizeof(request), deadline, err);
+    status = h->io.send(h->io.context, request, sizeof(request), deadline, err);
+    sent = !status;
     while (!status) {
         if (h->io.now(h->io.context) >= deadline) {
             status = fail(err, UC_TIMEOUT, 0, 0, "HID++ reply timed out");
@@ -94,11 +102,23 @@ int hidpp_request(struct hidpp *h, uint8_t op, uint8_t reg,
                 status = fail(err, UC_PROTOCOL, 0, 0, "invalid reply length for operation 0x%02x", op);
                 break;
             }
-            if (selector >= 0 && p[4] != (uint8_t)selector) continue;
+            if (selector >= 0 && p[4] != (uint8_t)selector) {
+                if (h->debug) fprintf(stderr, "Ignoring B5 selector 0x%02x; waiting for 0x%02x\n", p[4], (unsigned)selector);
+                continue;
+            }
             h->pending = false;
             return UC_OK;
         }
         status = dispatch(h, reply, err);
+    }
+    /* Keep the same logical request pending. A late matching reply still
+     * answers this identical read; never clear a poisoned session externally.
+     * Other selectors remain mismatches. Writes and send failures never retry. */
+    if (sent && status == UC_TIMEOUT && ++attempt < attempts &&
+        (!h->deadline || h->io.now(h->io.context) < h->deadline)) {
+        if (h->debug) fprintf(stderr, "Retrying stored-record read for selector 0x%02x after timeout\n", (unsigned)selector);
+        *err = (struct error){0};
+        goto retry;
     }
     h->pending = false;
     h->poisoned = true;

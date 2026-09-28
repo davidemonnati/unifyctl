@@ -64,7 +64,7 @@ Global options may appear before or after the command. Exactly one supported rec
 
 Connection status is `unknown` in read-only listing: the tool does not enable or solicit notifications to obtain it. A lack of notifications is not evidence of disconnection.
 
-`add` opens a pairing window for 1–255 seconds, default 30. Activate the peripheral's Unifying pairing mode when prompted. The tool waits for pairing notifications and verifies a new stored slot; accepting the open-window command is not success. Ctrl-C and SIGTERM attempt bounded cleanup. Individual requests have a 2-second timeout; state verification and cleanup each have a bounded 2-second budget.
+`add` opens a pairing window for 1–255 seconds, default 30. Activate the peripheral's Unifying pairing mode when prompted. The tool waits for pairing notifications and verifies a new stored slot; accepting the open-window command is not success. Ctrl-C and SIGTERM attempt bounded cleanup. Individual requests have a 2-second timeout. Pairing verification has a shared 5-second budget and can retry each identical stored-record read once after a reply timeout. This accommodates traffic during device initialization while still checking the echoed record selector. Removal verification and cleanup each retain a 2-second budget. Pairing-state writes are never retried.
 
 `remove SLOT` accepts slots 1–6. It shows the stored device and requires `y` or `yes` followed by Enter. All other answers and EOF decline. Without `--yes`, both input and the confirmation output must be terminals. It rechecks the device after confirmation, sends one unpair command, and verifies the slot is empty. Removal disconnects the device from this receiver.
 
@@ -93,13 +93,14 @@ Results go to stdout; prompts, errors, and `--debug` hexadecimal traffic go to s
 - **Unsupported interface:** do not substitute an arbitrary Logitech hidraw node. Check the receiver family, VID/PID, and management interface.
 - **Timeout or protocol error:** stop competing receiver managers and collect a `--debug list` trace. Errors include the raw protocol code when available.
 - **Uncertain pairing/removal outcome:** run `list` before retrying. Pairing-state writes are never automatically resent.
+- **Receiver reports successful pairing, then verification fails:** the device may already be paired and working. Run `list` to confirm its stored slot. Linux can query a newly connected device even with no other receiver manager running; a response for a different record is ignored, and verification retries the same read once. Persistent interference still returns a nonzero status rather than claiming a verified inventory.
 - **Cleanup warning:** the receiver may have changed state even when an acknowledgement was lost. Closure is attempted once; when the session is ambiguous, notification restoration may be skipped and is reported. Check stored state and reconnect the receiver if needed. A receiver-side pairing timeout also bounds the open window.
 
 ## Development
 
 See [architecture](docs/architecture.md), [protocol provenance](docs/protocol.md), [validation checklist](docs/hardware-validation.md), and the original [implementation plan](IMPLEMENTATION_PLAN.md).
 
-`make test` never pairs or unpairs hardware. It uses synthetic protocol fixtures and socket pairs. Linux-only CLI checks use deliberately invalid receiver paths. Tests cover sparse stored slots, optional metadata, malformed reports, notification/reply matching, deadlines, pairing outcomes, cancellation, confirmation, and removal verification.
+`make test` never pairs or unpairs hardware. It uses synthetic protocol fixtures, an anonymized user-supplied pairing trace with synthetic timing and recovery replies, and socket pairs. Linux-only CLI checks use deliberately invalid receiver paths. Tests cover sparse stored slots, optional metadata, malformed reports, notification/reply matching, bounded read retries, deadlines, pairing outcomes, cancellation, confirmation, and removal verification.
 
 Source and test code use 1TBS. A one-statement `if` or `else if` body stays on the condition's line without braces, except when braces avoid a dangling `else`. No automatic formatter is configured because common defaults would rewrite this style.
 

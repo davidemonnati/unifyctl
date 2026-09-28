@@ -10,6 +10,8 @@ struct pairing_events {
     uint16_t wpid[SLOT_COUNT];
 };
 
+enum { PAIRING_VERIFY_MS = 5000 };
+
 static void pairing_notification(void *context, const struct report *r) {
     struct pairing_events *events = context;
     const uint8_t *p = r->bytes;
@@ -52,7 +54,7 @@ static int pause_events(struct hidpp *h, int64_t until, struct error *err) {
 
 static int verify_new(struct hidpp *h, const struct device before[SLOT_COUNT],
                       struct pairing_events *events, struct device *added, struct error *err) {
-    int64_t deadline = h->io.now(h->io.context) + 2000;
+    int64_t deadline = h->io.now(h->io.context) + PAIRING_VERIFY_MS;
     if (h->deadline && deadline > h->deadline) deadline = h->deadline;
     h->deadline = deadline;
     while (h->io.now(h->io.context) < deadline) {
@@ -90,7 +92,7 @@ static int verify_new(struct hidpp *h, const struct device before[SLOT_COUNT],
  * sequence number; its late acknowledgement can be indistinguishable from a
  * close acknowledgement. Close is still attempted once, but reported unverified.
  * Flags are restored only after a completed cleanup transaction. */
-static int cleanup_pairing(struct hidpp *h, bool opened, bool flags_changed,
+static int cleanup_pairing(struct hidpp *h, bool opened, bool closed, bool flags_changed,
                            const uint8_t original[3], FILE *diagnostics) {
     struct error cleanup_error = {0};
     bool uncertain = h->poisoned;
@@ -99,10 +101,12 @@ static int cleanup_pairing(struct hidpp *h, bool opened, bool flags_changed,
     h->notification_context = NULL;
     h->io.set_cleanup(h->io.context, true);
     h->deadline = h->io.now(h->io.context) + 2000;
-    if (opened && uncertain) {
-        const uint8_t close_window[3] = {2, 0, 0};
-        status = hidpp_cleanup_write(h, 0xb2, close_window, h->deadline, &cleanup_error);
-        fputs("unifyctl: pairing-window closure attempted but cannot be verified after an incomplete transaction\n", diagnostics);
+    if (uncertain) {
+        if (opened && !closed) {
+            const uint8_t close_window[3] = {2, 0, 0};
+            status = hidpp_cleanup_write(h, 0xb2, close_window, h->deadline, &cleanup_error);
+            fputs("unifyctl: pairing-window closure attempted but cannot be verified after an incomplete transaction\n", diagnostics);
+        }
         if (flags_changed) fputs("unifyctl: notification flags could not be safely restored; reconnect receiver after checking pairing state\n", diagnostics);
     } else {
         if (opened) {
@@ -136,12 +140,15 @@ int operation_add(struct hidpp *h, unsigned timeout, const struct operation_ui *
     uint8_t original[3], enabled[3];
     memcpy(original, reply.bytes + 4, sizeof(original));
     memcpy(enabled, original, sizeof(enabled));
-    enabled[1] |= 1; /* Wireless notifications, preserving all other bits. */
+    /* Solaar enables both wireless reports and software presence while it
+     * manages a receiver. Preserve the original flags and restore them. */
+    enabled[1] |= 0x09;
     bool flags_changed = memcmp(enabled, original, sizeof(enabled)) != 0;
     bool opened = false;
     if (flags_changed) status = write_register(h, 0x00, enabled, err);
 
     struct pairing_events events = {0};
+    bool verification_started = false;
     if (!status) {
         h->notification = pairing_notification;
         h->notification_context = &events;
@@ -153,7 +160,7 @@ int operation_add(struct hidpp *h, unsigned timeout, const struct operation_ui *
         uint8_t open_window[3] = {1, 0, (uint8_t)timeout};
         opened = true; /* Even a failed acknowledgement can follow a successful write. */
         status = write_register(h, 0xb2, open_window, err);
-        h->deadline = window_deadline + 2000; /* Bounded stored-state verification grace. */
+        h->deadline = window_deadline + PAIRING_VERIFY_MS;
         while (!status) {
             if (events.closed && events.error) {
                 status = pairing_failure(events.error, err);
@@ -164,7 +171,11 @@ int operation_add(struct hidpp *h, unsigned timeout, const struct operation_ui *
                 if (!before[i].paired && events.connected[i]) candidate = true;
             }
             if (candidate || events.closed) {
+                verification_started = true;
+                bool previous_retry = h->retry_pairing_reads;
+                h->retry_pairing_reads = true;
                 status = verify_new(h, before, &events, &added, err);
+                h->retry_pairing_reads = previous_retry;
                 break;
             }
             if (h->io.now(h->io.context) >= window_deadline) {
@@ -175,13 +186,15 @@ int operation_add(struct hidpp *h, unsigned timeout, const struct operation_ui *
             if (status == UC_TIMEOUT) fail(err, UC_TIMEOUT, 0, 0, "pairing window timed out without a verified new device");
         }
     }
-    int cleanup = cleanup_pairing(h, opened, flags_changed, original, ui->diagnostics);
+    bool reported_success = events.closed && !events.error;
+    if (status && verification_started && reported_success) fputs("unifyctl: receiver reported successful pairing, but stored-device verification failed; run list before pairing again\n", ui->diagnostics);
+    int cleanup = cleanup_pairing(h, opened, events.closed, flags_changed, original, ui->diagnostics);
     if (!status && added.paired) {
         fputs("New stored pairing:\n", ui->output);
         device_print(ui->output, &added);
         if (cleanup) status = fail(err, UC_PROTOCOL, 0, 0, "device paired, but receiver cleanup was incomplete");
     }
-    if (status && opened && (status == UC_IO || h->poisoned)) fputs("unifyctl: pairing outcome may be uncertain; run list before trying again\n", ui->diagnostics);
+    if (status && opened && !reported_success && (status == UC_IO || h->poisoned)) fputs("unifyctl: pairing outcome may be uncertain; run list before trying again\n", ui->diagnostics);
     return status;
 }
 

@@ -14,6 +14,7 @@ struct hidpp {
     bool debug;
     bool poisoned;
     bool pending;
+    bool retry_pairing_reads; /* One identical B5 read retry during verification only. */
     int64_t deadline; /* Optional operation-wide limit, zero means none. */
     notification_fn notification;
     void *notification_context;

@@ -114,6 +114,50 @@ static void test_failures(void) {
     assert(d.paired && !d.has_serial && !d.name[0]);
 }
 
+static void test_read_retry_limits(void) {
+    struct mock m = {0};
+    struct hidpp h = mock_session(&m);
+    struct error err = {0};
+    struct device d;
+    h.retry_pairing_reads = true;
+    h.deadline = 2500;
+    assert(device_read(&h, 1, &d, false, &err) == UC_TIMEOUT);
+    assert(m.now == 2500 && m.sends == 2 && h.poisoned);
+
+    m = (struct mock){0};
+    h = mock_session(&m);
+    h.retry_pairing_reads = true;
+    h.deadline = 1000;
+    assert(device_read(&h, 1, &d, false, &err) == UC_TIMEOUT);
+    assert(m.now == 1000 && m.sends == 1);
+
+    for (unsigned action = 1; action <= 3; action++) {
+        m = (struct mock){0};
+        h = mock_session(&m);
+        h.retry_pairing_reads = true; /* Even explicit opt-in cannot retry SET. */
+        struct report reply;
+        const uint8_t params[] = {(uint8_t)action, 0, 0};
+        assert(hidpp_request(&h, 0x80, 0xb2, params, -1, &reply, &err) == UC_TIMEOUT);
+        assert(m.sends == 1 && m.now == 2000);
+    }
+
+    int failures[] = {UC_IO, UC_INTERRUPT, UC_TERMINATE};
+    for (size_t i = 0; i < sizeof(failures) / sizeof(failures[0]); i++) {
+        m = (struct mock){0};
+        m.events[m.count++] = (struct mock_event){.status = failures[i], .at = 2100};
+        h = mock_session(&m);
+        h.retry_pairing_reads = true;
+        assert(device_read(&h, 1, &d, false, &err) == failures[i]);
+        assert(m.sends == 2 && m.now == 2100 && h.poisoned);
+    }
+
+    m = (struct mock){.send_error = UC_IO};
+    h = mock_session(&m);
+    h.retry_pairing_reads = true;
+    assert(device_read(&h, 1, &d, false, &err) == UC_IO);
+    assert(m.now == 0 && h.poisoned);
+}
+
 static void test_selection(void) {
     struct receivers *receivers = calloc(1, sizeof(*receivers));
     assert(receivers);
@@ -154,6 +198,7 @@ int main(void) {
     test_listing();
     test_matching();
     test_failures();
+    test_read_retry_limits();
     test_selection();
     test_descriptor();
     puts("Core: listing, matching, malformed input, metadata, discovery and descriptor tests passed");
