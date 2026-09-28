@@ -1,0 +1,8 @@
+# Optional active-session access, only classic Unifying management interface 02.
+# Install before systemd's 73-seat-late.rules. Not installed by make install.
+ACTION!="add|change", GOTO="unifyctl_end"
+SUBSYSTEM!="hidraw", GOTO="unifyctl_end"
+ATTRS{idVendor}!="046d", GOTO="unifyctl_end"
+ATTRS{idProduct}=="c52b|c532", IMPORT{builtin}="usb_id"
+ATTRS{idProduct}=="c52b|c532", ENV{ID_USB_INTERFACE_NUM}=="02", TAG+="uaccess"
+LABEL="unifyctl_end"

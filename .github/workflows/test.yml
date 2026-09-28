@@ -1,0 +1,27 @@
+name: Tests
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+      - name: Build and test
+        run: make CC=${{ matrix.compiler }} CFLAGS='-O2 -g -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror' test
+      - name: Sanitizers
+        run: make CC=${{ matrix.compiler }} sanitize
+  portable:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test
+      - run: make sanitize
