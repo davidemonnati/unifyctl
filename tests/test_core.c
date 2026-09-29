@@ -2,6 +2,7 @@
 #include "devices.h"
 #include "discovery.h"
 #include "mock.h"
+#include "report_queue.h"
 
 #include <assert.h>
 #include <stdlib.h>
@@ -176,6 +177,69 @@ static void test_selection(void) {
     assert(!receiver_supported(0x1234, 0xc52b, 2));
 }
 
+static void test_registry_id(void) {
+    uint64_t id = 0;
+    assert(receiver_registry_id("DevSrvsID:4294968397", &id) && id == UINT64_C(4294968397));
+    assert(receiver_registry_id("DevSrvsID:18446744073709551615", &id) && id == UINT64_MAX);
+    assert(receiver_registry_id("DevSrvsID:1", &id) && id == 1);
+    const char *invalid[] = {
+        "", "DevSrvsID:", "DevSrvsID:0", "DevSrvsID:-1", "DevSrvsID:+1", "DevSrvsID: 1",
+        "DevSrvsID:1x", "DevSrvsID:0x10", "DevSrvsID:18446744073709551616",
+        "devsrvsid:1", "/dev/hidraw2", "IOService:/AppleACPIPlatformExpert"
+    };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        id = 42;
+        assert(!receiver_registry_id(invalid[i], &id));
+        assert(id == 42);
+    }
+}
+
+static void test_report_queue(void) {
+    struct report_queue *q = calloc(1, sizeof(*q));
+    assert(q);
+    struct error err = {0};
+    uint8_t out[REPORT_QUEUE_BYTES];
+    size_t size = sizeof(out);
+    assert(report_queue_empty(q));
+    assert(report_queue_pop(q, out, &size, &err) == UC_INTERNAL);
+
+    /* FIFO order across wraparound, preserving exact lengths. */
+    for (unsigned round = 0; round < 3; round++) {
+        for (unsigned i = 0; i < REPORT_QUEUE_DEPTH; i++) {
+            uint8_t report[HIDPP_LONG] = {0x10, (uint8_t)i, (uint8_t)round};
+            size_t length = (size_t)(i % 2 ? HIDPP_LONG : HIDPP_SHORT);
+            assert(report_queue_push(q, report, length));
+        }
+        for (unsigned i = 0; i < REPORT_QUEUE_DEPTH; i++) {
+            size = sizeof(out);
+            assert(report_queue_pop(q, out, &size, &err) == UC_OK);
+            assert(size == (size_t)(i % 2 ? HIDPP_LONG : HIDPP_SHORT));
+            assert(out[0] == 0x10 && out[1] == (uint8_t)i && out[2] == (uint8_t)round);
+        }
+        assert(report_queue_empty(q) && !q->lost);
+    }
+
+    /* A caller buffer that is too small fails without consuming the report. */
+    const uint8_t long_report[HIDPP_LONG] = {0x11, 0xff, 0x83, 0xb5};
+    assert(report_queue_push(q, long_report, sizeof(long_report)));
+    size = HIDPP_SHORT;
+    assert(report_queue_pop(q, out, &size, &err) == UC_PROTOCOL);
+    size = sizeof(out);
+    assert(report_queue_pop(q, out, &size, &err) == UC_OK && size == sizeof(long_report));
+    assert(!memcmp(out, long_report, size));
+
+    /* Overflow, empty and oversized reports latch loss instead of dropping silently. */
+    uint8_t big[REPORT_QUEUE_BYTES + 1] = {0x20};
+    for (unsigned i = 0; i < REPORT_QUEUE_DEPTH; i++) assert(report_queue_push(q, big, 7));
+    assert(!q->lost && !report_queue_push(q, big, 7) && q->lost);
+    memset(q, 0, sizeof(*q));
+    assert(!report_queue_push(q, big, 0) && q->lost && report_queue_empty(q));
+    memset(q, 0, sizeof(*q));
+    assert(report_queue_push(q, big, REPORT_QUEUE_BYTES));
+    assert(!report_queue_push(q, big, sizeof(big)) && q->lost);
+    free(q);
+}
+
 static void test_descriptor(void) {
     const uint8_t bytes[] = {
         0x06, 0x00, 0xff, 0x09, 1, 0xa1, 1, 0x85, 0x10,
@@ -200,7 +264,9 @@ int main(void) {
     test_failures();
     test_read_retry_limits();
     test_selection();
+    test_registry_id();
+    test_report_queue();
     test_descriptor();
-    puts("Core: listing, matching, malformed input, metadata, discovery and descriptor tests passed");
+    puts("Core: listing, matching, malformed input, metadata, discovery, receiver ID, report queue and descriptor tests passed");
     return 0;
 }

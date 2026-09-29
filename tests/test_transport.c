@@ -1,3 +1,4 @@
+#include "signals.h"
 #include "transport.h"
 
 #include <assert.h>
@@ -55,9 +56,30 @@ static void test_disconnect_and_backpressure(void) {
     raw_close(&raw);
 }
 
+static void test_signal_lifecycle(void) {
+    struct error err = {0};
+    struct sigaction before_int, before_term, current;
+    assert(sigaction(SIGINT, NULL, &before_int) == 0);
+    assert(sigaction(SIGTERM, NULL, &before_term) == 0);
+    assert(signals_install(&err) == UC_OK);
+    assert(signals_wake_fd() >= 0 && signals_pending() == 0);
+    assert(signals_install(&err) == UC_INTERNAL); /* One session per process. */
+    assert(raise(SIGTERM) == 0);
+    assert(signals_pending() == UC_TERMINATE);
+    signals_drain();
+    assert(signals_pending() == UC_TERMINATE); /* Draining only resets the wakeup. */
+    signals_restore();
+    assert(signals_wake_fd() == -1);
+    assert(sigaction(SIGINT, NULL, &current) == 0 && current.sa_handler == before_int.sa_handler);
+    assert(sigaction(SIGTERM, NULL, &current) == 0 && current.sa_handler == before_term.sa_handler);
+    assert(signals_install(&err) == UC_OK && signals_pending() == 0);
+    signals_restore();
+}
+
 int main(void) {
     test_io();
     test_disconnect_and_backpressure();
-    puts("Transport: report I/O, deadlines, cancellation, cleanup, backpressure and disconnect tests passed");
+    test_signal_lifecycle();
+    puts("Transport: report I/O, deadlines, cancellation, cleanup, backpressure, disconnect and signal lifecycle tests passed");
     return 0;
 }

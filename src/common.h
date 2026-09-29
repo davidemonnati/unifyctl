@@ -22,5 +22,7 @@ struct error {
 int fail(struct error *err, enum status status, int system_errno,
          uint8_t protocol_code, const char *format, ...);
 void print_error(FILE *out, const struct error *err);
+/* CLOCK_MONOTONIC in milliseconds for real transports; tests use fake clocks. */
+int64_t monotonic_ms(void);
 
 #endif

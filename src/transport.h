@@ -13,13 +13,14 @@ struct transport {
     void (*set_cleanup)(void *, bool);
 };
 
+/* POSIX descriptor transport (Linux hidraw; sockets in tests). */
 struct raw_transport {
     int fd;
-    int wake_read;
-    int wake_write;
+    bool signals;
     bool cleanup;
 };
 
+/* Adopts fd even on failure; the caller always invokes raw_close. */
 int raw_init(struct raw_transport *raw, int fd, struct transport *transport, struct error *err);
 void raw_close(struct raw_transport *raw);
 

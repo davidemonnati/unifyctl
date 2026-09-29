@@ -1,7 +1,26 @@
 #include "discovery.h"
 
+#include <string.h>
+
 bool receiver_supported(unsigned vendor, unsigned product, unsigned interface) {
     return vendor == 0x046d && (product == 0xc52b || product == 0xc532) && interface == 2;
+}
+
+bool receiver_registry_id(const char *text, uint64_t *id) {
+    static const char prefix[] = "DevSrvsID:";
+    if (strncmp(text, prefix, sizeof(prefix) - 1)) return false;
+    text += sizeof(prefix) - 1;
+    if (!*text) return false;
+    uint64_t n = 0;
+    for (; *text; text++) {
+        if (*text < '0' || *text > '9') return false;
+        uint64_t digit = (uint64_t)(*text - '0');
+        if (n > (UINT64_MAX - digit) / 10) return false;
+        n = n * 10 + digit;
+    }
+    if (!n) return false;
+    *id = n;
+    return true;
 }
 
 int receiver_choose(const struct receivers *receivers, size_t *index, struct error *err) {

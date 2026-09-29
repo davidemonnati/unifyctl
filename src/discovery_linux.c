@@ -138,7 +138,7 @@ failed:
     return -1;
 }
 
-int receiver_open(const char *explicit_path, FILE *diagnostics, struct error *err) {
+static int open_receiver(const char *explicit_path, FILE *diagnostics, struct error *err) {
     struct udev *udev = udev_new();
     if (!udev) {
         fail(err, UC_INTERNAL, ENOMEM, 0, "cannot initialize libudev");
@@ -162,4 +162,35 @@ int receiver_open(const char *explicit_path, FILE *diagnostics, struct error *er
     }
     udev_unref(udev);
     return fd;
+}
+
+struct receiver_session {
+    struct raw_transport raw;
+};
+
+int receiver_connect(const char *explicit_path, FILE *diagnostics,
+                     struct receiver_session **session, struct transport *io,
+                     struct error *err) {
+    *session = NULL;
+    int fd = open_receiver(explicit_path, diagnostics, err);
+    if (fd < 0) return (int)err->status;
+    struct receiver_session *s = calloc(1, sizeof(*s));
+    if (!s) {
+        close(fd);
+        return fail(err, UC_INTERNAL, ENOMEM, 0, "cannot allocate receiver session");
+    }
+    int status = raw_init(&s->raw, fd, io, err);
+    if (status) {
+        raw_close(&s->raw);
+        free(s);
+        return status;
+    }
+    *session = s;
+    return UC_OK;
+}
+
+void receiver_disconnect(struct receiver_session *session) {
+    if (!session) return;
+    raw_close(&session->raw);
+    free(session);
 }

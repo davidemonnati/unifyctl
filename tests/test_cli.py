@@ -40,3 +40,17 @@ if sys.platform.startswith("linux"):
             assert result.returncode == expected, (path, result)
             assert not result.stdout
     print("Linux: invalid receiver path checks passed")
+
+if sys.platform == "darwin":
+    # All rejected before any HID traffic: malformed IDs, Linux-style paths,
+    # and well-formed IDs that do not name a supported management interface.
+    invalid = ["/dev/null", "/dev/hidraw0", "DevSrvsID:", "DevSrvsID:abc",
+               "DevSrvsID:0", "DevSrvsID:18446744073709551616",
+               "DevSrvsID:18446744073709551615", "DevSrvsID:1"]
+    for receiver in invalid:
+        for command in (["list"], ["remove", "1", "--yes"], ["add", "--timeout", "1"]):
+            result = subprocess.run([binary, "--receiver", receiver, *command],
+                                    capture_output=True, text=True, timeout=10)
+            assert result.returncode == 3, (receiver, command, result)
+            assert not result.stdout and result.stderr.startswith("unifyctl: ")
+    print("macOS: invalid receiver ID checks passed")

@@ -2,6 +2,13 @@
 
 #include <stdarg.h>
 #include <string.h>
+#include <time.h>
+
+int64_t monotonic_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 
 int fail(struct error *err, enum status status, int system_errno,
          uint8_t protocol_code, const char *format, ...) {

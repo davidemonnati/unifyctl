@@ -1,10 +1,10 @@
 # unifyctl
 
-A small C11 command-line tool for managing stored mouse and keyboard pairings on classic Logitech Unifying USB receivers. It uses Linux hidraw and libudev without detaching kernel drivers.
+A small C11 command-line tool for managing stored mouse and keyboard pairings on classic Logitech Unifying USB receivers. It uses Linux hidraw and libudev, or IOKit HID on macOS, without detaching or seizing the operating system's keyboard and mouse drivers.
 
 The initial allowlist is `046d:c52b` and `046d:c532`, management interface 2, with HID++ report descriptor validation. Bolt, Lightspeed, Nano, Bluetooth, battery reporting, and peripheral settings are outside this version's scope.
 
-**Validation status:** portable tests and ASan/UBSan pass on macOS. The Linux backend, udev rules, and physical receiver behavior have not yet been validated here. The Linux CI workflow is provided but has not been run in this workspace. See the [hardware checklist](docs/hardware-validation.md) before claiming hardware compatibility.
+**Validation status:** portable tests and ASan/UBSan passed on macOS with the earlier hardware-less stub backend. The Linux backend, udev rules, the macOS IOKit backend, and physical receiver behavior have not been validated. The macOS backend was written without access to a Mac and has not yet been compiled. See the [hardware checklist](docs/hardware-validation.md) before claiming hardware compatibility.
 
 ## Build and install
 
@@ -20,11 +20,15 @@ sudo make install
 
 On Fedora, the corresponding development dependencies are `gcc`, `make`, `pkgconf-pkg-config`, `systemd-devel`, and `python3`.
 
-The executable is `build/unifyctl`. `make install` installs only the binary under `/usr/local/bin`; override `PREFIX` and `DESTDIR` as needed. It does not install permission rules automatically. Python is used only by the CLI tests. Runtime dependencies are libc and libudev.
+On macOS, install the Xcode Command Line Tools (`xcode-select --install`) and use the same `make` targets. The build links the system `IOKit` and `CoreFoundation` frameworks; there are no third-party dependencies.
 
-On macOS, `make test` builds the portable core with a backend that rejects hardware commands. This supports help, parsing, protocol, operation, and POSIX transport tests without pretending to support macOS receivers.
+The executable is `build/unifyctl`. `make install` installs only the binary under `/usr/local/bin`; override `PREFIX` and `DESTDIR` as needed. It does not install permission rules automatically. Python is used only by the CLI tests. Runtime dependencies are libc and libudev on Linux, and system frameworks on macOS.
+
+On other platforms, `make test` builds the portable core with a backend that rejects hardware commands. This supports help, parsing, protocol, operation, and POSIX transport tests.
 
 ## Permissions
+
+### Linux
 
 Even `list` requires read/write access to the management hidraw node because read-only queries are sent as output reports. It does not write receiver registers or change stored state.
 
@@ -39,6 +43,12 @@ Reconnect the receiver to apply the rule. It grants active-session access only t
 
 For a headless system, an administrator can create a dedicated `unifyctl` group, add only authorized users, and replace `TAG+="uaccess"` in the final matching rule with `GROUP="unifyctl", MODE="0660"`. Keep the VID/PID and interface restrictions intact, reload rules, reconnect, and start a new login session.
 
+### macOS
+
+No rules file is needed and the tool must not be run with `sudo`. It opens only the receiver's vendor-defined HID++ interface, in shared (non-seizing) mode, so the system keeps handling the receiver's keyboard and mouse interfaces. macOS gates keyboard-class HID access behind **Privacy & Security → Input Monitoring**; the HID++ interface is vendor-defined and is not expected to require it, but this is unverified. If opening fails with an access error, check that setting for the terminal application and try again.
+
+Another process can open the same interface. Quit Logitech Options/Options+, Logi Tune, Solaar, and similar managers before pairing or removing devices.
+
 ## Usage
 
 ```sh
@@ -49,7 +59,8 @@ unifyctl add --help
 unifyctl remove --help
 
 unifyctl list
-unifyctl --receiver /dev/hidraw2 list
+unifyctl --receiver /dev/hidraw2 list                # Linux
+unifyctl --receiver DevSrvsID:4294968397 list        # macOS
 unifyctl --receiver /dev/hidraw2 --debug list
 
 # These commands change receiver pairings. Run only when intended.
@@ -58,7 +69,7 @@ unifyctl remove 2
 unifyctl remove 2 --yes
 ```
 
-Global options may appear before or after the command. Exactly one supported receiver is selected automatically; with several, the program lists candidates and requires `--receiver PATH`. Explicit paths are validated before any HID++ traffic. Help needs no attached receiver or device permissions.
+Global options may appear before or after the command. Exactly one supported receiver is selected automatically; with several, the program lists candidates and requires `--receiver PATH`. On Linux, `PATH` is the management interface's hidraw node. On macOS, it is the interface's IORegistry entry ID in the `DevSrvsID:<number>` form also used by hidapi; the ID is stable until the receiver is unplugged. Run `unifyctl list` with several receivers attached to print the candidates. Explicit receivers are validated before any HID++ traffic. Help needs no attached receiver or device permissions.
 
 `list` scans all six stored slots, including gaps. Sleeping and powered-off devices remain listed. An empty receiver prints `No paired devices.` and exits successfully. Output contains slot, stored name, type, WPID, optional serial number, and connection status. WPID identifies a model, not a unique device. Names are receiver-stored codenames, at most 14 bytes. Unsupported optional metadata is `unknown`; communication errors are not silently hidden.
 
@@ -68,7 +79,7 @@ Connection status is `unknown` in read-only listing: the tool does not enable or
 
 `remove SLOT` accepts slots 1–6. It shows the stored device and requires `y` or `yes` followed by Enter. All other answers and EOF decline. Without `--yes`, both input and the confirmation output must be terminals. It rechecks the device after confirmation, sends one unpair command, and verifies the slot is empty. Removal disconnects the device from this receiver.
 
-Do not run another receiver manager (including Solaar or ltunify) concurrently with pairing operations. An advisory lock prevents overlapping `unifyctl` sessions, but other programs and kernel clients may not honor it. Protocol replies lack transaction sequence numbers, so external interference cannot always be detected.
+Do not run another receiver manager (including Solaar, ltunify, or Logitech Options+) concurrently with pairing operations. An advisory lock prevents overlapping `unifyctl` sessions, but other programs and kernel clients may not honor it. On macOS the lock file lives in the per-user temporary directory, so it coordinates only sessions of the same user. Protocol replies lack transaction sequence numbers, so external interference cannot always be detected.
 
 ## Errors and troubleshooting
 
@@ -88,9 +99,10 @@ Results go to stdout; prompts, errors, and `--debug` hexadecimal traffic go to s
 | 130 | Cancelled by SIGINT |
 | 143 | Terminated by SIGTERM |
 
-- **Permission denied:** inspect the selected node's permissions and udev properties; confirm the local session is active, then reconnect after installing the rule.
-- **Multiple receivers:** use one of the printed hidraw paths with `--receiver`.
-- **Unsupported interface:** do not substitute an arbitrary Logitech hidraw node. Check the receiver family, VID/PID, and management interface.
+- **Permission denied (Linux):** inspect the selected node's permissions and udev properties; confirm the local session is active, then reconnect after installing the rule.
+- **Access denied (macOS):** check Privacy & Security → Input Monitoring for the terminal application. "Held exclusively by another process" means another program seized the interface; quit Logitech software and retry.
+- **Multiple receivers:** use one of the printed hidraw paths or `DevSrvsID:` values with `--receiver`.
+- **Unsupported interface:** do not substitute an arbitrary Logitech hidraw node or IOKit device. Check the receiver family, VID/PID, and management interface. On macOS, `ioreg -r -c IOHIDDevice -l` shows `VendorID`, `ProductID`, and the parent `bInterfaceNumber`.
 - **Timeout or protocol error:** stop competing receiver managers and collect a `--debug list` trace. Errors include the raw protocol code when available.
 - **Uncertain pairing/removal outcome:** run `list` before retrying. Pairing-state writes are never automatically resent.
 - **Receiver reports successful pairing, then verification fails:** the device may already be paired and working. Run `list` to confirm its stored slot. Linux can query a newly connected device even with no other receiver manager running; a response for a different record is ignored, and verification retries the same read once. Persistent interference still returns a nonzero status rather than claiming a verified inventory.
@@ -98,9 +110,9 @@ Results go to stdout; prompts, errors, and `--debug` hexadecimal traffic go to s
 
 ## Development
 
-See [architecture](docs/architecture.md), [protocol provenance](docs/protocol.md), [validation checklist](docs/hardware-validation.md), and the original [implementation plan](IMPLEMENTATION_PLAN.md).
+See [architecture](docs/architecture.md), [protocol provenance](docs/protocol.md), [validation checklist](docs/hardware-validation.md), and the original [implementation plan](docs/IMPLEMENTATION_PLAN.md).
 
-`make test` never pairs or unpairs hardware. It uses synthetic protocol fixtures, an anonymized user-supplied pairing trace with synthetic timing and recovery replies, and socket pairs. Linux-only CLI checks use deliberately invalid receiver paths. Tests cover sparse stored slots, optional metadata, malformed reports, notification/reply matching, bounded read retries, deadlines, pairing outcomes, cancellation, confirmation, and removal verification.
+`make test` never pairs or unpairs hardware. It uses synthetic protocol fixtures, an anonymized user-supplied pairing trace with synthetic timing and recovery replies, and socket pairs. Platform-specific CLI checks use deliberately invalid Linux receiver paths and macOS receiver IDs. Tests cover sparse stored slots, optional metadata, malformed reports, notification/reply matching, bounded read retries, deadlines, pairing outcomes, cancellation, confirmation, removal verification, signal-handler lifecycle, macOS receiver-ID parsing, and the callback report queue. The IOKit transport itself has no automated test: creating virtual HID devices requires an Apple-restricted entitlement, so it needs the manual checklist.
 
 Source and test code use 1TBS. A one-statement `if` or `else if` body stays on the condition's line without braces, except when braces avoid a dangling `else`. No automatic formatter is configured because common defaults would rewrite this style.
 

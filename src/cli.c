@@ -57,7 +57,8 @@ void cli_help(FILE *out, enum command command) {
               "List all stored paired devices, including sleeping or powered-off devices.\n"
               "Columns: SLOT NAME TYPE WPID SERIAL STATUS. Missing data is unknown.\n"
               "No arguments or command-specific flags. Does not change receiver state.\n"
-              "Example: unifyctl --receiver /dev/hidraw2 list\n", out);
+              "Example: unifyctl --receiver /dev/hidraw2 list\n"
+              "         unifyctl --receiver DevSrvsID:4294968397 list   (macOS)\n", out);
         break;
     case CMD_ADD:
         fputs("Usage: unifyctl [OPTIONS] add [--timeout SECONDS]\n\n"
@@ -90,13 +91,16 @@ void cli_help(FILE *out, enum command command) {
         break;
     }
     fputs("\nGlobal options (before or after COMMAND):\n"
-          "  --receiver PATH  Select the supported receiver's hidraw interface.\n"
+          "  --receiver PATH  Select the supported receiver's management interface:\n"
+          "                   Linux: hidraw node, e.g. /dev/hidraw2\n"
+          "                   macOS: IOKit ID, e.g. DevSrvsID:4294968397\n"
           "                   Default: auto-select only if exactly one is found.\n"
           "                   Multiple receivers require explicit selection.\n"
           "  --debug          Hexadecimal HID++ logging to stderr (default off).\n"
           "  --help           Global or command-specific help; no hardware needed.\n\n"
-          "Supported: classic Unifying 046d:c52b/c532, Linux hidraw + libudev.\n"
-          "Bolt, Lightspeed, and other receiver families are not supported.\n"
+          "Supported: classic Unifying 046d:c52b/c532 on Linux (hidraw + libudev)\n"
+          "and macOS (IOKit HID). Bolt, Lightspeed, and other receiver families\n"
+          "are not supported.\n"
           "Exit: 0 success; 1 internal; 2 usage; 3 selection; 4 access; 5 I/O;\n"
           "      6 timeout; 7 protocol/operation; 8 confirmation refused;\n"
           "      130 interrupted; 143 terminated.\n", out);
