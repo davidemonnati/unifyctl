@@ -4,9 +4,11 @@ A small C11 command-line tool for managing stored mouse and keyboard pairings on
 
 The initial allowlist is `046d:c52b` and `046d:c532`, management interface 2, with HID++ report descriptor validation. Bolt, Lightspeed, Nano, Bluetooth, battery reporting, and peripheral settings are outside this version's scope.
 
-**Validation status:** portable tests and ASan/UBSan passed on macOS with the earlier hardware-less stub backend. The Linux backend, udev rules, the macOS IOKit backend, and physical receiver behavior have not been validated. The macOS backend was written without access to a Mac and has not yet been compiled. See the [hardware checklist](docs/hardware-validation.md) before claiming hardware compatibility.
+**Validation status:** the native macOS IOKit backend builds without warnings on macOS 27.0 (arm64). `make test` and `make sanitize` (ASan/UBSan) passed on September 29, 2026, including invalid macOS receiver-ID checks, portable protocol/operation tests, report queue tests, and signal handling tests. These checks do not exercise a physical receiver. Linux build/udev validation and physical receiver validation remain outstanding in this workspace; see the [hardware checklist](docs/hardware-validation.md) for manual checks.
 
 ## Build and install
+
+### Linux
 
 On Debian/Ubuntu:
 
@@ -20,7 +22,26 @@ sudo make install
 
 On Fedora, the corresponding development dependencies are `gcc`, `make`, `pkgconf-pkg-config`, `systemd-devel`, and `python3`.
 
-On macOS, install the Xcode Command Line Tools (`xcode-select --install`) and use the same `make` targets. The build links the system `IOKit` and `CoreFoundation` frameworks; there are no third-party dependencies.
+### macOS
+
+Install the Xcode Command Line Tools if needed:
+
+```sh
+xcode-select --install
+```
+
+Then build and run the automated checks:
+
+```sh
+make
+make test
+make sanitize
+sudo make install
+```
+
+The build selects the native IOKit backend automatically and links the system `IOKit` and `CoreFoundation` frameworks. No third-party C libraries are required. `make test` and `make sanitize` also require `python3` on `PATH`. Installation under `/usr/local/bin` may require `sudo`; run `unifyctl` itself as your normal user.
+
+### Build targets and installation
 
 The executable is `build/unifyctl`. `make install` installs only the binary under `/usr/local/bin`; override `PREFIX` and `DESTDIR` as needed. It does not install permission rules automatically. Python is used only by the CLI tests. Runtime dependencies are libc and libudev on Linux, and system frameworks on macOS.
 
@@ -75,7 +96,7 @@ Global options may appear before or after the command. Exactly one supported rec
 
 Connection status is `unknown` in read-only listing: the tool does not enable or solicit notifications to obtain it. A lack of notifications is not evidence of disconnection.
 
-`add` opens a pairing window for 1–255 seconds, default 30. Activate the peripheral's Unifying pairing mode when prompted. The tool waits for pairing notifications and verifies a new stored slot; accepting the open-window command is not success. Ctrl-C and SIGTERM attempt bounded cleanup. Individual requests have a 2-second timeout. Pairing verification has a shared 5-second budget and can retry each identical stored-record read once after a reply timeout. This accommodates traffic during device initialization while still checking the echoed record selector. Removal verification and cleanup each retain a 2-second budget. Pairing-state writes are never retried.
+`add` opens a pairing window for 1–255 seconds, default 30. Activate the peripheral's Unifying pairing mode when prompted. The tool waits for pairing notifications and verifies a new stored slot; accepting the open-window command is not success. Ctrl-C and SIGTERM attempt bounded cleanup. Individual requests have a 2-second timeout. Pairing verification has a shared 5-second budget and can retry each identical stored-record read once after a reply timeout. This accommodates traffic during device initialization while still checking the echoed record selector. Removal verification and cleanup each retain a 2-second budget. Pairing-state writes are never retried. On macOS, report writes use a synchronous IOKit call with its own transfer timeout, so an in-progress write can delay cancellation or exceed the application-level request and cleanup budgets.
 
 `remove SLOT` accepts slots 1–6. It shows the stored device and requires `y` or `yes` followed by Enter. All other answers and EOF decline. Without `--yes`, both input and the confirmation output must be terminals. It rechecks the device after confirmation, sends one unpair command, and verifies the slot is empty. Removal disconnects the device from this receiver.
 
@@ -112,7 +133,7 @@ Results go to stdout; prompts, errors, and `--debug` hexadecimal traffic go to s
 
 See [architecture](docs/architecture.md), [protocol provenance](docs/protocol.md), [validation checklist](docs/hardware-validation.md), and the original [implementation plan](docs/IMPLEMENTATION_PLAN.md).
 
-`make test` never pairs or unpairs hardware. It uses synthetic protocol fixtures, an anonymized user-supplied pairing trace with synthetic timing and recovery replies, and socket pairs. Platform-specific CLI checks use deliberately invalid Linux receiver paths and macOS receiver IDs. Tests cover sparse stored slots, optional metadata, malformed reports, notification/reply matching, bounded read retries, deadlines, pairing outcomes, cancellation, confirmation, removal verification, signal-handler lifecycle, macOS receiver-ID parsing, and the callback report queue. The IOKit transport itself has no automated test: creating virtual HID devices requires an Apple-restricted entitlement, so it needs the manual checklist.
+`make test` never pairs or unpairs hardware. It uses synthetic protocol fixtures, an anonymized user-supplied pairing trace with synthetic timing and recovery replies, and socket pairs. Platform-specific CLI checks use deliberately invalid Linux receiver paths and macOS receiver IDs. Tests cover sparse stored slots, optional metadata, malformed reports, notification/reply matching, bounded read retries, deadlines, pairing outcomes, cancellation, confirmation, removal verification, signal-handler lifecycle, macOS receiver-ID parsing, and the callback report queue. The macOS CLI tests exercise receiver selection failures before HID traffic, and the portable tests cover the callback report queue. Actual IOKit report transfers, receiver disconnection, and shared access with normal keyboard/mouse input still require the manual hardware checklist.
 
 Source and test code use 1TBS. A one-statement `if` or `else if` body stays on the condition's line without braces, except when braces avoid a dangling `else`. No automatic formatter is configured because common defaults would rewrite this style.
 
