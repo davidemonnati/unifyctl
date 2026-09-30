@@ -4,7 +4,7 @@ A small C11 command-line tool for managing stored mouse and keyboard pairings on
 
 The initial allowlist is `046d:c52b` and `046d:c532`, management interface 2, with HID++ report descriptor validation. Bolt, Lightspeed, Nano, Bluetooth, battery reporting, and peripheral settings are outside this version's scope.
 
-**Validation status:** the native macOS IOKit backend builds without warnings on macOS 27.0 (arm64). `make test` and `make sanitize` (ASan/UBSan) passed on September 29, 2026, including invalid macOS receiver-ID checks, portable protocol/operation tests, report queue tests, and signal handling tests. These checks do not exercise a physical receiver. Linux build/udev validation and physical receiver validation remain outstanding in this workspace; see the [hardware checklist](docs/hardware-validation.md) for manual checks.
+**Validation status:** the native macOS IOKit backend builds without warnings on macOS 27.0 (arm64). `make test` and `make sanitize` (ASan/UBSan) passed on September 29, 2026, including invalid macOS receiver-ID checks, portable protocol/operation tests, report queue tests, and signal handling tests. These checks do not exercise a physical receiver. Linux build/udev validation and physical receiver validation remain outstanding in this workspace.
 
 ## Build and install
 
@@ -130,8 +130,6 @@ Results go to stdout; prompts, errors, and `--debug` hexadecimal traffic go to s
 - **Cleanup warning:** the receiver may have changed state even when an acknowledgement was lost. Closure is attempted once; when the session is ambiguous, notification restoration may be skipped and is reported. Check stored state and reconnect the receiver if needed. A receiver-side pairing timeout also bounds the open window.
 
 ## Development
-
-See [architecture](docs/architecture.md), [protocol provenance](docs/protocol.md), [validation checklist](docs/hardware-validation.md), and the original [implementation plan](docs/IMPLEMENTATION_PLAN.md).
 
 `make test` never pairs or unpairs hardware. It uses synthetic protocol fixtures, an anonymized user-supplied pairing trace with synthetic timing and recovery replies, and socket pairs. Platform-specific CLI checks use deliberately invalid Linux receiver paths and macOS receiver IDs. Tests cover sparse stored slots, optional metadata, malformed reports, notification/reply matching, bounded read retries, deadlines, pairing outcomes, cancellation, confirmation, removal verification, signal-handler lifecycle, macOS receiver-ID parsing, and the callback report queue. The macOS CLI tests exercise receiver selection failures before HID traffic, and the portable tests cover the callback report queue. Actual IOKit report transfers, receiver disconnection, and shared access with normal keyboard/mouse input still require the manual hardware checklist.
 
