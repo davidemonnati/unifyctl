@@ -198,20 +198,15 @@ int operation_add(struct hidpp *h, unsigned timeout, const struct operation_ui *
     return status;
 }
 
-int operation_remove(struct hidpp *h, unsigned slot, const struct operation_ui *ui, struct error *err) {
-    struct device before, current;
-    int status = device_read(h, slot, &before, true, err);
-    if (status) return status;
-    if (!before.paired) return fail(err, UC_PROTOCOL, 0, 0, "slot %u has no stored pairing", slot);
-    fputs("Removing this pairing disconnects the device from this receiver:\n", ui->diagnostics);
-    device_print(ui->diagnostics, &before);
-    if (!ui->yes) status = cli_confirm(ui->input, ui->diagnostics, ui->interactive, err);
+static int remove_confirmed(struct hidpp *h, const struct device *before,
+                            const struct operation_ui *ui, struct error *err) {
+    unsigned slot = before->slot;
+    struct device current;
     int cancelled = h->io.cancelled(h->io.context);
     if (cancelled) return fail(err, (enum status)cancelled, 0, 0, "removal cancelled");
+    int status = device_read(h, slot, &current, true, err);
     if (status) return status;
-    status = device_read(h, slot, &current, true, err);
-    if (status) return status;
-    if (!device_same(&before, &current)) return fail(err, UC_PROTOCOL, 0, 0, "slot changed during confirmation; removal aborted");
+    if (!device_same(before, &current)) return fail(err, UC_PROTOCOL, 0, 0, "slot changed during confirmation; removal aborted");
     uint8_t unpair[3] = {3, (uint8_t)slot, 0};
     status = write_register(h, 0xb2, unpair, err);
     if (!status) {
@@ -231,5 +226,48 @@ int operation_remove(struct hidpp *h, unsigned slot, const struct operation_ui *
         return status;
     }
     fprintf(ui->output, "Removed stored pairing from slot %u.\n", slot);
+    return UC_OK;
+}
+
+int operation_remove(struct hidpp *h, unsigned slot, const struct operation_ui *ui, struct error *err) {
+    struct device before;
+    int status = device_read(h, slot, &before, true, err);
+    if (status) return status;
+    if (!before.paired) return fail(err, UC_PROTOCOL, 0, 0, "slot %u has no stored pairing", slot);
+    fputs("Removing this pairing disconnects the device from this receiver:\n", ui->diagnostics);
+    device_print(ui->diagnostics, &before);
+    if (!ui->yes) status = cli_confirm(ui->input, ui->diagnostics, ui->interactive, false, err);
+    int cancelled = h->io.cancelled(h->io.context);
+    if (cancelled) return fail(err, (enum status)cancelled, 0, 0, "removal cancelled");
+    if (status) return status;
+    return remove_confirmed(h, &before, ui, err);
+}
+
+int operation_remove_all(struct hidpp *h, const struct operation_ui *ui, struct error *err) {
+    struct device before[SLOT_COUNT];
+    int status = devices_read(h, before, true, err);
+    if (status) return status;
+    unsigned count = 0, removed = 0;
+    for (unsigned i = 0; i < SLOT_COUNT; i++) count += before[i].paired ? 1u : 0u;
+    if (!count) {
+        fputs("No paired devices.\n", ui->output);
+        return UC_OK;
+    }
+    fputs("Removing all listed pairings disconnects these devices from this receiver:\n", ui->diagnostics);
+    devices_print(ui->diagnostics, before);
+    if (!ui->yes) status = cli_confirm(ui->input, ui->diagnostics, ui->interactive, true, err);
+    int cancelled = h->io.cancelled(h->io.context);
+    if (cancelled) return fail(err, (enum status)cancelled, 0, 0, "removal cancelled");
+    if (status) return status;
+    for (unsigned i = 0; i < SLOT_COUNT; i++) {
+        if (!before[i].paired) continue;
+        status = remove_confirmed(h, &before[i], ui, err);
+        if (status) {
+            fprintf(ui->diagnostics, "unifyctl: bulk removal stopped at slot %u; %u of %u pairings verified removed; run list before retrying\n",
+                    before[i].slot, removed, count);
+            return status;
+        }
+        removed++;
+    }
     return UC_OK;
 }

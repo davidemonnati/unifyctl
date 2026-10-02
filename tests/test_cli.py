@@ -9,6 +9,8 @@ good = [
     ["remove", "--help"], ["--receiver", "/no/such/device", "list", "--help"],
     ["add", "--timeout", "255", "--help"],
     ["remove", "6", "--yes", "--help"],
+    ["remove", "--all", "--help"], ["remove", "--all", "--yes", "--help"],
+    ["--all", "remove", "--help"],
 ]
 bad = [
     [], ["wat"], ["list", "extra"], ["--receiver"], ["--wat"], ["remove"],
@@ -19,6 +21,8 @@ bad = [
     ["add", "--timeout", "+1"], ["add", "--timeout", ""],
     ["list", "--timeout", "30"], ["add", "--yes"], ["help", "extra"],
     ["--receiver", "a", "--receiver", "b", "list"],
+    ["remove", "1", "--all"], ["remove", "--all", "1"],
+    ["list", "--all"], ["add", "--all"], ["--all"], ["help", "--all"],
 ]
 for args in good:
     result = subprocess.run([binary, *args], capture_output=True, text=True)

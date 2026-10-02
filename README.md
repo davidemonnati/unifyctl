@@ -88,6 +88,8 @@ unifyctl --receiver /dev/hidraw2 --debug list
 unifyctl add --timeout 30
 unifyctl remove 2
 unifyctl remove 2 --yes
+unifyctl remove --all
+unifyctl remove --all --yes
 ```
 
 Global options may appear before or after the command. Exactly one supported receiver is selected automatically; with several, the program lists candidates and requires `--receiver PATH`. On Linux, `PATH` is the management interface's hidraw node. On macOS, it is the interface's IORegistry entry ID in the `DevSrvsID:<number>` form also used by hidapi; the ID is stable until the receiver is unplugged. Run `unifyctl list` with several receivers attached to print the candidates. Explicit receivers are validated before any HID++ traffic. Help needs no attached receiver or device permissions.
@@ -99,6 +101,8 @@ Connection status is `unknown` in read-only listing: the tool does not enable or
 `add` opens a pairing window for 1–255 seconds, default 30. Activate the peripheral's Unifying pairing mode when prompted. The tool waits for pairing notifications and verifies a new stored slot; accepting the open-window command is not success. Ctrl-C and SIGTERM attempt bounded cleanup. Individual requests have a 2-second timeout. Pairing verification has a shared 5-second budget and can retry each identical stored-record read once after a reply timeout. This accommodates traffic during device initialization while still checking the echoed record selector. Removal verification and cleanup each retain a 2-second budget. Pairing-state writes are never retried. On macOS, report writes use a synchronous IOKit call with its own transfer timeout, so an in-progress write can delay cancellation or exceed the application-level request and cleanup budgets.
 
 `remove SLOT` accepts slots 1–6. It shows the stored device and requires `y` or `yes` followed by Enter. All other answers and EOF decline. Without `--yes`, both input and the confirmation output must be terminals. It rechecks the device after confirmation, sends one unpair command, and verifies the slot is empty. Removal disconnects the device from this receiver.
+
+`remove --all` removes all stored pairings, including offline devices, on the selected receiver. It lists the devices and asks for confirmation once; use `--yes` to skip confirmation. A slot and `--all` cannot be combined. An empty receiver succeeds without prompting. Each listed device is rechecked before removal and its empty slot verified afterward. The operation stops on the first error or interruption and reports how many removals were verified; earlier removals are not rolled back. Devices paired concurrently after the initial listing are not included. Receiver selection follows the same `--receiver` rules as other commands.
 
 Do not run another receiver manager (including Solaar, ltunify, or Logitech Options+) concurrently with pairing operations. An advisory lock prevents overlapping `unifyctl` sessions, but other programs and kernel clients may not honor it. On macOS the lock file lives in the per-user temporary directory, so it coordinates only sessions of the same user. Protocol replies lack transaction sequence numbers, so external interference cannot always be detected.
 

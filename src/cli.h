@@ -10,12 +10,13 @@ struct options {
     bool help;
     bool debug;
     bool yes;
+    bool all;
     unsigned timeout;
     unsigned slot;
 };
 
 int cli_parse(int argc, char **argv, struct options *options, struct error *err);
 void cli_help(FILE *out, enum command command);
-int cli_confirm(FILE *in, FILE *out, bool interactive, struct error *err);
+int cli_confirm(FILE *in, FILE *out, bool interactive, bool all, struct error *err);
 
 #endif
