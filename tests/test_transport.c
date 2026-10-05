@@ -8,6 +8,13 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+/*
+ * Verify report I/O, deadlines, and cancellation through a socket transport.
+ *
+ * Uses local sockets to verify complete reports and fake receiver responses.
+ * Also exercises cancellation suppression during cleanup without physical
+ * hardware.
+ */
 static void test_io(void) {
     int sockets[2];
     assert(socketpair(AF_UNIX, SOCK_DGRAM, 0, sockets) == 0);
@@ -39,6 +46,12 @@ static void test_io(void) {
     close(sockets[1]);
 }
 
+/*
+ * Verify disconnection and blocked-write handling.
+ *
+ * Closes the peer or fills the socket send buffer. Checks that transport
+ * operations fail or time out instead of hanging.
+ */
 static void test_disconnect_and_backpressure(void) {
     int sockets[2];
     assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
@@ -56,6 +69,12 @@ static void test_disconnect_and_backpressure(void) {
     raw_close(&raw);
 }
 
+/*
+ * Verify signal installation, cancellation, and handler restoration.
+ *
+ * Exercises process-wide handlers and the wake pipe across installation and
+ * restoration. Uses local signal delivery without a receiver.
+ */
 static void test_signal_lifecycle(void) {
     struct error err = {0};
     struct sigaction before_int, before_term, current;
@@ -76,6 +95,12 @@ static void test_signal_lifecycle(void) {
     signals_restore();
 }
 
+/*
+ * Run the test suite and report successful completion.
+ *
+ * Executes each assertion-based test in this suite. Returns zero after
+ * printing the completion message; assertion failures abort the process.
+ */
 int main(void) {
     test_io();
     test_disconnect_and_backpressure();

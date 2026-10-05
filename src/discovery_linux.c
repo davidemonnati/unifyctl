@@ -12,6 +12,13 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/*
+ * Read a hexadecimal udev attribute bounded to 16 bits.
+ *
+ * Reads the named sysfs attribute without taking ownership of its text.
+ * Missing, empty, out-of-range, or incompletely parsed values return false
+ * without changing value.
+ */
 static bool hex_attr(struct udev_device *device, const char *name, unsigned *value) {
     const char *text = udev_device_get_sysattr_value(device, name);
     if (!text || !*text) return false;
@@ -23,6 +30,13 @@ static bool hex_attr(struct udev_device *device, const char *name, unsigned *val
     return true;
 }
 
+/*
+ * Validate the receiver identity and fill its selection details.
+ *
+ * On success, fills the receiver path, physical identity, and product ID.
+ * Unsupported or inconsistent device ancestry returns false without opening
+ * the receiver.
+ */
 static bool identify(struct udev_device *device, struct receiver *receiver) {
     struct udev_device *usb = udev_device_get_parent_with_subsystem_devtype(device, "usb", "usb_device");
     struct udev_device *interface = udev_device_get_parent_with_subsystem_devtype(device, "usb", "usb_interface");
@@ -43,6 +57,13 @@ static bool identify(struct udev_device *device, struct receiver *receiver) {
     return true;
 }
 
+/*
+ * Collect supported receivers, deduplicating physical devices.
+ *
+ * Appends to the caller's initialized receiver collection and rejects capacity
+ * overflow. Releases enumeration resources on every path; a failure may leave
+ * a partial collection.
+ */
 static int enumerate(struct udev *udev, struct receivers *receivers, struct error *err) {
     struct udev_enumerate *scan = udev_enumerate_new(udev);
     if (!scan) return fail(err, UC_INTERNAL, ENOMEM, 0, "cannot allocate udev enumeration");
@@ -75,6 +96,13 @@ static int enumerate(struct udev *udev, struct receivers *receivers, struct erro
     return status;
 }
 
+/*
+ * Open and lock a receiver after validating its identity and descriptor.
+ *
+ * Checks path identity before and after opening, then verifies hidraw identity
+ * and HID++ reports. Returns an owned nonblocking, locked descriptor, or -1
+ * with err set and any opened descriptor closed.
+ */
 static int validated_open(struct udev *udev, const char *path, struct error *err) {
     struct stat before, after;
     if (stat(path, &before) < 0) {
@@ -138,6 +166,13 @@ failed:
     return -1;
 }
 
+/*
+ * Select a receiver and return its validated descriptor, or -1.
+ *
+ * An explicit path bypasses enumeration but not validation. Otherwise requires
+ * exactly one supported receiver and prints candidates when selection is
+ * ambiguous; the caller owns the returned descriptor.
+ */
 static int open_receiver(const char *explicit_path, FILE *diagnostics, struct error *err) {
     struct udev *udev = udev_new();
     if (!udev) {
@@ -168,6 +203,13 @@ struct receiver_session {
     struct raw_transport raw;
 };
 
+/*
+ * Select and open a receiver, then initialize its transport session.
+ *
+ * A NULL explicit_path requests automatic selection. On success, the caller
+ * owns *session and io borrows its transport state; on failure, *session is
+ * NULL and acquired resources are released.
+ */
 int receiver_connect(const char *explicit_path, FILE *diagnostics,
                      struct receiver_session **session, struct transport *io,
                      struct error *err) {
@@ -189,6 +231,12 @@ int receiver_connect(const char *explicit_path, FILE *diagnostics,
     return UC_OK;
 }
 
+/*
+ * Release the receiver session and its transport resources.
+ *
+ * Accepts NULL. Closes backend resources and frees the session; any transport
+ * callbacks referring to it become invalid.
+ */
 void receiver_disconnect(struct receiver_session *session) {
     if (!session) return;
     raw_close(&session->raw);

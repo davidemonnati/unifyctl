@@ -7,6 +7,13 @@
 /* A private mode ensures only this session's sources run while waiting. */
 #define RUN_LOOP_MODE CFSTR("unifyctl.receiver")
 
+/*
+ * Queue an incoming HID report or record an input failure.
+ *
+ * Borrows the callback report and copies valid bytes into the queue. Records
+ * callback errors or invalid lengths so receive can fail instead of silently
+ * losing data.
+ */
 static void on_input(void *context, IOReturn result, void *sender, IOHIDReportType type,
                      uint32_t report_id, uint8_t *report, CFIndex length) {
     struct iokit_transport *t = context;
@@ -18,13 +25,24 @@ static void on_input(void *context, IOReturn result, void *sender, IOHIDReportTy
     else report_queue_push(&t->queue, report, (size_t)length);
 }
 
+/*
+ * Mark the receiver as disconnected.
+ *
+ * Updates the callback context only; resource teardown is deferred to the
+ * normal close path. Subsequent I/O detects the removed flag.
+ */
 static void on_removed(void *context, IOReturn result, void *sender) {
     (void)result;
     (void)sender;
     ((struct iokit_transport *)context)->removed = true;
 }
 
-/* Wakes CFRunLoopRunInMode after a signal; state lives in signals.c. */
+/*
+ * Wakes CFRunLoopRunInMode after a signal; state lives in signals.c.
+ *
+ * Drains wake bytes and reenables the read callback. Cancellation itself
+ * remains recorded for receive to inspect outside the callback.
+ */
 static void on_wake(CFFileDescriptorRef descriptor, CFOptionFlags types, void *info) {
     (void)types;
     (void)info;
@@ -32,26 +50,57 @@ static void on_wake(CFFileDescriptorRef descriptor, CFOptionFlags types, void *i
     CFFileDescriptorEnableCallBacks(descriptor, kCFFileDescriptorReadCallBack);
 }
 
+/*
+ * Return the monotonic clock used for IOKit deadlines.
+ *
+ * Ignores context and shares the monotonic millisecond clock used by the other
+ * transport backend.
+ */
 static int64_t iokit_now(void *context) {
     (void)context;
     return monotonic_ms();
 }
 
+/*
+ * Return pending cancellation unless cleanup mode is active.
+ *
+ * Reads process-wide signal state without consuming it. Cleanup mode permits
+ * bounded cleanup despite a pending interrupt.
+ */
 static int iokit_cancelled(void *context) {
     struct iokit_transport *t = context;
     if (t->cleanup) return 0;
     return signals_pending();
 }
 
+/*
+ * Toggle cleanup mode to control cancellation handling.
+ *
+ * Updates only cancellation handling for this transport. Pending signal state
+ * and queued reports are preserved.
+ */
 static void iokit_set_cleanup(void *context, bool cleanup) {
     ((struct iokit_transport *)context)->cleanup = cleanup;
 }
 
+/*
+ * Recognize IOKit errors indicating an unavailable device.
+ *
+ * Recognizes missing, unattached, unopened, and offline device statuses. Other
+ * IOKit errors require separate handling by the caller.
+ */
 static bool detached(IOReturn result) {
     return result == kIOReturnNoDevice || result == kIOReturnNotAttached ||
            result == kIOReturnNotOpen || result == kIOReturnOffline;
 }
 
+/*
+ * Send one output report synchronously without retrying the write.
+ *
+ * Checks cancellation, disconnection, size, and deadline before submission.
+ * The synchronous IOKit call has its own timeout; success confirms submission,
+ * while a failed write may have an uncertain outcome.
+ */
 static int iokit_send(void *context, const uint8_t *bytes, size_t size, int64_t deadline, struct error *err) {
     struct iokit_transport *t = context;
     int cancelled = iokit_cancelled(t);
@@ -72,6 +121,13 @@ static int iokit_send(void *context, const uint8_t *bytes, size_t size, int64_t 
     return fail(err, UC_IO, 0, 0, "cannot write HID report (IOReturn 0x%08x); outcome uncertain", (unsigned)result);
 }
 
+/*
+ * Run the event loop until a report, cancellation, failure, or timeout.
+ *
+ * Treats *size as capacity and returns one queued report. Detects queue loss,
+ * callback failure, and disconnection before delivery, and uses the remaining
+ * deadline for its private run-loop wait.
+ */
 static int iokit_receive(void *context, uint8_t *bytes, size_t *size, int64_t deadline, struct error *err) {
     struct iokit_transport *t = context;
     for (;;) {
@@ -91,6 +147,13 @@ static int iokit_receive(void *context, uint8_t *bytes, size_t *size, int64_t de
     }
 }
 
+/*
+ * Adopt the opened HID device and register input and signal event sources.
+ *
+ * Takes ownership of device even on failure; the caller must invoke
+ * iokit_close for partial cleanup. Installs process-wide signal handling and
+ * callbacks on the calling thread's run loop.
+ */
 int iokit_init(struct iokit_transport *t, IOHIDDeviceRef device, struct transport *io, struct error *err) {
     memset(t, 0, sizeof(*t));
     t->device = device;
@@ -113,6 +176,13 @@ int iokit_init(struct iokit_transport *t, IOHIDDeviceRef device, struct transpor
     return UC_OK;
 }
 
+/*
+ * Release the HID device, event sources, and installed signal handlers.
+ *
+ * Unschedules callbacks before closing and releasing the device, then releases
+ * wake sources and restores signals. Handles partial initialization and clears
+ * ownership fields for repeated calls.
+ */
 void iokit_close(struct iokit_transport *t) {
     if (t->device) {
         if (t->scheduled) {

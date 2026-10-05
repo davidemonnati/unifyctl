@@ -5,6 +5,12 @@
 
 #include <unistd.h>
 
+/*
+ * Parse the command, run the receiver operation, and return its exit status.
+ *
+ * Shows help before opening hardware; otherwise creates one session,
+ * dispatches the command, and disconnects before returning its status.
+ */
 int main(int argc, char **argv) {
     struct options options;
     struct error err = {0};

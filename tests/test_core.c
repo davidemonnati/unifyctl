@@ -8,6 +8,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ * Verify slot decoding, optional metadata, and listing output.
+ *
+ * Covers empty and occupied records, serial/name decoding, unknown link
+ * state, and display behavior using synthetic replies.
+ */
 static void test_listing(void) {
     unsigned masks[] = {0, 1, 0x21, 0x15, 0x3f};
     for (size_t i = 0; i < sizeof(masks) / sizeof(masks[0]); i++) {
@@ -44,11 +50,23 @@ static void test_listing(void) {
     }
 }
 
+/*
+ * Count notifications delivered to the test callback.
+ *
+ * Asserts that the report is a connection notification, then increments the
+ * caller-owned counter. Checks that request matching preserves notifications.
+ */
 static void count_notification(void *context, const struct report *report) {
     assert(report->bytes[2] == 0x41);
     (*(unsigned *)context)++;
 }
 
+/*
+ * Verify reply matching while unrelated notifications are dispatched.
+ *
+ * Injects unrelated traffic around a matching reply and checks callback
+ * delivery. Ensures requests accept only the expected receiver record.
+ */
 static void test_matching(void) {
     struct mock m = {0};
     uint8_t notification[] = {0x10, 1, 0x41, 4, 2, 1, 0x40};
@@ -68,6 +86,12 @@ static void test_matching(void) {
     assert(d.paired && d.slot == 1);
 }
 
+/*
+ * Verify malformed reports, protocol errors, and incomplete transactions.
+ *
+ * Exercises invalid report shapes and transport/protocol failure paths. Checks
+ * that incomplete transactions prevent unsafe reuse of the session.
+ */
 static void test_failures(void) {
     for (size_t n = 0; n <= 20; n++) {
         if (n == 7) continue;
@@ -115,6 +139,13 @@ static void test_failures(void) {
     assert(d.paired && !d.has_serial && !d.name[0]);
 }
 
+/*
+ * Verify read retry deadlines and that writes and terminal failures are not
+ * retried.
+ *
+ * Uses fake deadlines to bound retries and injected failures to stop them.
+ * Confirms B2 state-changing writes are sent at most once.
+ */
 static void test_read_retry_limits(void) {
     struct mock m = {0};
     struct hidpp h = mock_session(&m);
@@ -159,6 +190,12 @@ static void test_read_retry_limits(void) {
     assert(m.now == 0 && h.poisoned);
 }
 
+/*
+ * Verify receiver allowlisting and unambiguous selection.
+ *
+ * Checks accepted USB identities and failure when no receiver or multiple
+ * receivers are present. Does not enumerate real hardware.
+ */
 static void test_selection(void) {
     struct receivers *receivers = calloc(1, sizeof(*receivers));
     assert(receivers);
@@ -177,6 +214,12 @@ static void test_selection(void) {
     assert(!receiver_supported(0x1234, 0xc52b, 2));
 }
 
+/*
+ * Verify receiver ID syntax and integer bounds.
+ *
+ * Covers valid IDs, malformed prefixes, zero, and integer overflow. Parsing
+ * must not depend on a macOS receiver being present.
+ */
 static void test_registry_id(void) {
     uint64_t id = 0;
     assert(receiver_registry_id("DevSrvsID:4294968397", &id) && id == UINT64_C(4294968397));
@@ -194,6 +237,12 @@ static void test_registry_id(void) {
     }
 }
 
+/*
+ * Verify FIFO ordering, capacity limits, and loss reporting.
+ *
+ * Exercises report ordering and bounded storage with synthetic bytes. Confirms
+ * undersized output buffers do not consume queued reports.
+ */
 static void test_report_queue(void) {
     struct report_queue *q = calloc(1, sizeof(*q));
     assert(q);
@@ -240,6 +289,12 @@ static void test_report_queue(void) {
     free(q);
 }
 
+/*
+ * Verify accepted HID++ descriptors and reject invalid layouts.
+ *
+ * Uses synthetic HID item sequences to exercise report-size validation and
+ * malformed input. No platform HID APIs are required.
+ */
 static void test_descriptor(void) {
     const uint8_t bytes[] = {
         0x06, 0x00, 0xff, 0x09, 1, 0xa1, 1, 0x85, 0x10,
@@ -258,6 +313,12 @@ static void test_descriptor(void) {
     assert(!receiver_descriptor(invalid, sizeof(invalid)));
 }
 
+/*
+ * Run the test suite and report successful completion.
+ *
+ * Executes each assertion-based test in this suite. Returns zero after
+ * printing the completion message; assertion failures abort the process.
+ */
 int main(void) {
     test_listing();
     test_matching();
