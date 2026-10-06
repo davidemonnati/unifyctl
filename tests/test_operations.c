@@ -443,12 +443,90 @@ static void test_remove_failures(void) {
     ui_close(&ui);
 }
 
-/*
- * Run the test suite and report successful completion.
- *
- * Executes each assertion-based test in this suite. Returns zero after
- * printing the completion message; assertion failures abort the process.
- */
+static void test_remove_all(void) {
+    /* Empty, sparse, and full receivers; one answer must authorize the batch. */
+    const unsigned masks[] = {0, 0x25, 0x3f};
+    for (size_t k = 0; k < sizeof(masks) / sizeof(masks[0]); k++) {
+        for (unsigned yes = 0; yes < 2; yes++) {
+            struct mock m = {0};
+            mock_snapshot(&m, masks[k], true);
+            unsigned count = 0;
+            for (unsigned slot = 1; slot <= SLOT_COUNT; slot++) {
+                if (!(masks[k] & (1u << (slot - 1)))) continue;
+                count++;
+                mock_slot(&m, slot, true, true);
+                mock_ack(&m, 0xb2);
+                mock_slot(&m, slot, false, false);
+            }
+            struct hidpp h = mock_session(&m);
+            struct operation_ui ui = ui_open(!yes, yes != 0, "y\n");
+            struct error err = {0};
+            assert(operation_remove_all(&h, &ui, &err) == UC_OK);
+            assert(writes(&m, 0xb2, 3) == count && m.position == m.count);
+            unsigned seen = 0;
+            for (size_t i = 0; i < m.sends; i++) {
+                const uint8_t *p = m.sent[i].bytes;
+                if (p[2] == 0x80 && p[3] == 0xb2 && p[4] == 3) {
+                    assert(p[5] >= 1 && p[5] <= SLOT_COUNT);
+                    seen |= 1u << (p[5] - 1);
+                }
+            }
+            assert(seen == masks[k]);
+            assert(contains(ui.output, count ? "Removed stored pairing" : "No paired devices."));
+            assert(!contains(ui.diagnostics, "Remove this pairing?"));
+            if (count && !yes) assert(contains(ui.diagnostics, "Remove all listed pairings?"));
+            ui_close(&ui);
+        }
+    }
+    for (unsigned interactive = 0; interactive < 2; interactive++) {
+        struct mock m = {0};
+        mock_snapshot(&m, 5, true);
+        struct hidpp h = mock_session(&m);
+        struct operation_ui ui = ui_open(interactive != 0, false, interactive ? "n\n" : "y\n");
+        struct error err = {0};
+        assert(operation_remove_all(&h, &ui, &err) == UC_REFUSED);
+        assert(writes(&m, 0xb2, 3) == 0 && m.position == m.count);
+        ui_close(&ui);
+    }
+}
+
+static void test_remove_all_failures(void) {
+    /* Stop after one successful removal on identity change, I/O failure,
+     * cancellation, or an unacknowledged unpair request. Never touch slot 6. */
+    const int expected[] = {UC_PROTOCOL, UC_IO, UC_INTERRUPT, UC_TIMEOUT};
+    for (unsigned kind = 0; kind < 4; kind++) {
+        struct mock m = {0};
+        mock_snapshot(&m, 0x25, true);
+        mock_slot(&m, 1, true, true);
+        mock_ack(&m, 0xb2);
+        mock_slot(&m, 1, false, false);
+        if (kind == 0 || kind == 3) {
+            size_t start = m.count;
+            mock_slot(&m, 3, true, true);
+            if (kind == 0) m.events[start + 1].report.bytes[5] ^= 1;
+        } else m.events[m.count++].status = expected[kind];
+        struct hidpp h = mock_session(&m);
+        struct operation_ui ui = ui_open(false, true, NULL);
+        struct error err = {0};
+        assert(operation_remove_all(&h, &ui, &err) == expected[kind]);
+        assert(writes(&m, 0xb2, 3) == (kind == 3 ? 2u : 1u));
+        assert(contains(ui.output, "Removed stored pairing from slot 1"));
+        assert(!contains(ui.output, "Removed stored pairing from slot 3"));
+        assert(contains(ui.diagnostics, "1 of 3 pairings verified removed"));
+        assert(m.position == m.count);
+        ui_close(&ui);
+    }
+    struct mock m = {0};
+    mock_slot(&m, 1, true, true);
+    m.events[m.count++].status = UC_IO;
+    struct hidpp h = mock_session(&m);
+    struct operation_ui ui = ui_open(false, true, NULL);
+    struct error err = {0};
+    assert(operation_remove_all(&h, &ui, &err) == UC_IO);
+    assert(writes(&m, 0xb2, 3) == 0);
+    ui_close(&ui);
+}
+
 int main(void) {
     test_pair_success();
     test_pair_failures();
@@ -458,6 +536,8 @@ int main(void) {
     test_pair_verification_exhausted();
     test_remove_confirmation();
     test_remove_failures();
+    test_remove_all();
+    test_remove_all_failures();
     puts("Operations: pairing, cancellation, cleanup, confirmation and removal tests passed");
     return 0;
 }

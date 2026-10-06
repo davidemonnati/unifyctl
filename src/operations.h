@@ -13,5 +13,6 @@ struct operation_ui {
 
 int operation_add(struct hidpp *h, unsigned timeout, const struct operation_ui *ui, struct error *err);
 int operation_remove(struct hidpp *h, unsigned slot, const struct operation_ui *ui, struct error *err);
+int operation_remove_all(struct hidpp *h, const struct operation_ui *ui, struct error *err);
 
 #endif

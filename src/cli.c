@@ -36,6 +36,7 @@ int cli_parse(int argc, char **argv, struct options *o, struct error *err) {
         if (!strcmp(arg, "--help")) o->help = true;
         else if (!strcmp(arg, "--debug")) o->debug = true;
         else if (!strcmp(arg, "--yes")) o->yes = true;
+        else if (!strcmp(arg, "--all")) o->all = true;
         else if (!strcmp(arg, "--receiver")) {
             if (o->receiver || ++i == argc || !*argv[i] || argv[i][0] == '-') return fail(err, UC_USAGE, 0, 0, "--receiver requires one path");
             o->receiver = argv[i];
@@ -55,9 +56,11 @@ int cli_parse(int argc, char **argv, struct options *o, struct error *err) {
     }
     if (timeout_seen && o->command != CMD_ADD) return fail(err, UC_USAGE, 0, 0, "--timeout is only valid with add");
     if (o->yes && o->command != CMD_REMOVE) return fail(err, UC_USAGE, 0, 0, "--yes is only valid with remove");
+    if (o->all && o->command != CMD_REMOVE) return fail(err, UC_USAGE, 0, 0, "--all is only valid with remove");
+    if (o->all && o->slot) return fail(err, UC_USAGE, 0, 0, "remove accepts either a slot or --all, not both");
     if (o->command == CMD_HELP) o->help = true;
     if (o->command == CMD_NONE && !o->help) return fail(err, UC_USAGE, 0, 0, "a command is required");
-    if (o->command == CMD_REMOVE && !o->slot && !o->help) return fail(err, UC_USAGE, 0, 0, "remove requires a slot (1–6)");
+    if (o->command == CMD_REMOVE && !o->slot && !o->all && !o->help) return fail(err, UC_USAGE, 0, 0, "remove requires a slot (1–6) or --all");
     return UC_OK;
 }
 
@@ -87,12 +90,15 @@ void cli_help(FILE *out, enum command command) {
               "Example: unifyctl add --timeout 30\n", out);
         break;
     case CMD_REMOVE:
-        fputs("Usage: unifyctl [OPTIONS] remove SLOT [--yes]\n\n"
-              "Remove a stored pairing; the device disconnects from this receiver.\n"
-              "  SLOT   Required receiver slot, integer 1–6.\n"
+        fputs("Usage: unifyctl [OPTIONS] remove (SLOT | --all) [--yes]\n\n"
+              "Remove stored pairings; devices disconnect from this receiver.\n"
+              "  SLOT   Receiver slot, integer 1–6; mutually exclusive with --all.\n"
+              "  --all  Remove all stored pairings on the selected receiver.\n"
               "  --yes  Skip confirmation for intentional noninteractive use.\n"
               "Default: require interactive confirmation; otherwise refuse.\n"
+              "With --all, confirm once; stop on the first failure. Empty receivers succeed.\n"
               "Examples: unifyctl remove 2\n"
+              "          unifyctl remove --all\n"
               "          unifyctl --receiver /dev/hidraw2 remove 2 --yes\n", out);
         break;
     default:
@@ -101,6 +107,7 @@ void cli_help(FILE *out, enum command command) {
               "  list                 List stored pairings (including offline devices).\n"
               "  add [--timeout N]    Pair a device; default 30 seconds, range 1–255.\n"
               "  remove SLOT [--yes]  Unpair slot 1–6; confirms unless --yes is given.\n"
+              "  remove --all [--yes] Unpair all devices on the selected receiver.\n"
               "  help                 Show this help.\n\n"
               "Examples: unifyctl list\n"
               "          unifyctl add --timeout 30\n"
@@ -130,10 +137,10 @@ void cli_help(FILE *out, enum command command) {
  * Accepts only lowercase y or yes followed by a newline. Noninteractive input,
  * EOF, and all other answers return UC_REFUSED.
  */
-int cli_confirm(FILE *in, FILE *out, bool interactive, struct error *err) {
+int cli_confirm(FILE *in, FILE *out, bool interactive, bool all, struct error *err) {
     char line[16];
     if (!interactive) return fail(err, UC_REFUSED, 0, 0, "interactive confirmation unavailable; use --yes intentionally");
-    fputs("Remove this pairing? [y/N] ", out);
+    fputs(all ? "Remove all listed pairings? [y/N] " : "Remove this pairing? [y/N] ", out);
     fflush(out);
     if (!fgets(line, sizeof(line), in)) return fail(err, UC_REFUSED, 0, 0, "removal declined");
     if (!strcmp(line, "y\n") || !strcmp(line, "yes\n")) return UC_OK;
