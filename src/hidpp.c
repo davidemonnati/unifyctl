@@ -2,6 +2,12 @@
 
 #include <string.h>
 
+/*
+ * Return a readable name for a HID++ error code.
+ *
+ * Returns a static string for known HID++ 1.0 codes, or a fallback for unknown
+ * codes. No allocation or receiver access is performed.
+ */
 const char *hidpp_error_name(uint8_t code) {
     static const char *const names[] = {
         "undefined error", "invalid command", "invalid address", "invalid value",
@@ -13,6 +19,12 @@ const char *hidpp_error_name(uint8_t code) {
     return "unknown protocol error";
 }
 
+/*
+ * Log report bytes to stderr when debug logging is enabled.
+ *
+ * Prints the direction label and n hexadecimal bytes as one line. Leaves the
+ * report and session unchanged.
+ */
 static void trace(struct hidpp *h, const char *direction, const uint8_t *p, size_t n) {
     if (!h->debug) return;
     fprintf(stderr, "%s", direction);
@@ -20,6 +32,13 @@ static void trace(struct hidpp *h, const char *direction, const uint8_t *p, size
     fputc('\n', stderr);
 }
 
+/*
+ * Read and validate one HID++ report, ignoring unrelated report IDs.
+ *
+ * Uses an oversized temporary buffer to detect invalid lengths. Non-HID++
+ * reports succeed with r->length=0; malformed HID++ lengths or device indices
+ * produce UC_PROTOCOL.
+ */
 static int receive(struct hidpp *h, struct report *r, int64_t deadline, struct error *err) {
     /* Read more than 20 bytes so oversized reports cannot be silently truncated. */
     uint8_t buffer[256];
@@ -40,6 +59,13 @@ static int receive(struct hidpp *h, struct report *r, int64_t deadline, struct e
     return UC_OK;
 }
 
+/*
+ * Validate notifications and forward them to the registered callback.
+ *
+ * Ignores empty reports and register replies. Checks known notification
+ * layouts before invoking the optional callback synchronously with a borrowed
+ * report pointer.
+ */
 static int dispatch(struct hidpp *h, const struct report *r, struct error *err) {
     if (!r->length || r->bytes[2] >= 0x80) return UC_OK;
     const uint8_t *p = r->bytes;
@@ -53,6 +79,12 @@ static int dispatch(struct hidpp *h, const struct report *r, struct error *err) 
     return UC_OK;
 }
 
+/*
+ * Receive and dispatch one report within the supplied deadline.
+ *
+ * The deadline is absolute monotonic milliseconds. Returns receive/validation
+ * failures directly and dispatches notifications without issuing a request.
+ */
 int hidpp_pump(struct hidpp *h, int64_t deadline, struct error *err) {
     struct report r;
     int status = receive(h, &r, deadline, err);
@@ -60,6 +92,16 @@ int hidpp_pump(struct hidpp *h, int64_t deadline, struct error *err) {
     return dispatch(h, &r, err);
 }
 
+/*
+ * Match a register reply while dispatching notifications; poison incomplete
+ * transactions.
+ *
+ * Allows one outstanding request and matches receiver, operation, register,
+ * and optional selector. Each attempt is limited to two seconds and the
+ * operation deadline; opted-in pairing reads may retry once, but writes never
+ * do. Incomplete transactions make the session unusable for further normal
+ * requests.
+ */
 int hidpp_request(struct hidpp *h, uint8_t op, uint8_t reg,
                   const uint8_t params[3], int selector,
                   struct report *reply, struct error *err) {
@@ -125,6 +167,13 @@ retry:
     return status;
 }
 
+/*
+ * Send a cleanup write without waiting for an ambiguous acknowledgement.
+ *
+ * Bypasses normal session matching and sends once within the absolute
+ * deadline. Success confirms transport submission only, not receiver execution
+ * or pairing-window closure.
+ */
 int hidpp_cleanup_write(struct hidpp *h, uint8_t reg, const uint8_t params[3],
                         int64_t deadline, struct error *err) {
     uint8_t request[HIDPP_SHORT] = {0x10, 0xff, 0x80, reg, params[0], params[1], params[2]};

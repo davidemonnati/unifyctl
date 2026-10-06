@@ -2,6 +2,12 @@
 
 #include <string.h>
 
+/*
+ * Parse a positive decimal integer without exceeding the given limit.
+ *
+ * Writes value only on success; rejects zero, nondecimal characters, and
+ * values above max.
+ */
 static bool number(const char *text, unsigned max, unsigned *value) {
     unsigned n = 0;
     if (!*text) return false;
@@ -16,6 +22,12 @@ static bool number(const char *text, unsigned max, unsigned *value) {
     return true;
 }
 
+/*
+ * Parse arguments and reject invalid command and option combinations.
+ *
+ * Initializes options with a 30-second timeout. Returns UC_USAGE with an
+ * explanation for invalid input; receiver paths borrow storage from argv.
+ */
 int cli_parse(int argc, char **argv, struct options *o, struct error *err) {
     *o = (struct options){.timeout = 30};
     bool timeout_seen = false;
@@ -52,6 +64,12 @@ int cli_parse(int argc, char **argv, struct options *o, struct error *err) {
     return UC_OK;
 }
 
+/*
+ * Print general or command-specific usage information.
+ *
+ * Writes to the supplied stream without accessing hardware. Unrecognized
+ * command values select the general help text.
+ */
 void cli_help(FILE *out, enum command command) {
     fputs("unifyctl — manage classic Logitech Unifying receiver pairings\n\n", out);
     switch (command) {
@@ -113,6 +131,12 @@ void cli_help(FILE *out, enum command command) {
           "      130 interrupted; 143 terminated.\n", out);
 }
 
+/*
+ * Require an explicit interactive confirmation before removal.
+ *
+ * Accepts only lowercase y or yes followed by a newline. Noninteractive input,
+ * EOF, and all other answers return UC_REFUSED.
+ */
 int cli_confirm(FILE *in, FILE *out, bool interactive, bool all, struct error *err) {
     char line[16];
     if (!interactive) return fail(err, UC_REFUSED, 0, 0, "interactive confirmation unavailable; use --yes intentionally");

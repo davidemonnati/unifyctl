@@ -21,8 +21,13 @@ struct receiver_session {
     int lock_fd;
 };
 
-/* Reads a nonnegative number from the entry itself or, when parents is set,
- * from the nearest ancestor in the IOService plane (USB interface/device). */
+/*
+ * Reads a nonnegative number from the entry itself or, when parents is set,
+ * from the nearest ancestor in the IOService plane (USB interface/device).
+ *
+ * Checks the Core Foundation value type and signed conversion before writing
+ * value. Releases the property reference on both success and failure.
+ */
 static bool number_property(io_service_t service, CFStringRef key, bool parents, uint64_t *value) {
     CFTypeRef ref = parents
         ? IORegistryEntrySearchCFProperty(service, kIOServicePlane, key, kCFAllocatorDefault,
@@ -38,6 +43,12 @@ static bool number_property(io_service_t service, CFStringRef key, bool parents,
     return true;
 }
 
+/*
+ * Check whether a registry string property equals the expected value.
+ *
+ * Returns false for a missing property or a non-string value. Releases the
+ * copied registry property before returning.
+ */
 static bool string_property_is(io_service_t service, CFStringRef key, CFStringRef expected) {
     CFTypeRef ref = IORegistryEntryCreateCFProperty(service, key, kCFAllocatorDefault, 0);
     if (!ref) return false;
@@ -47,6 +58,13 @@ static bool string_property_is(io_service_t service, CFStringRef key, CFStringRe
     return equal;
 }
 
+/*
+ * Validate the HID++ report descriptor stored in the registry.
+ *
+ * Requires a nonempty CFData descriptor bounded by MAX_DESCRIPTOR. Delegates
+ * report-layout checks to receiver_descriptor and releases the property
+ * reference.
+ */
 static bool descriptor_valid(io_service_t service) {
     CFTypeRef ref = IORegistryEntryCreateCFProperty(service, CFSTR(kIOHIDReportDescriptorKey), kCFAllocatorDefault, 0);
     if (!ref) return false;
@@ -60,9 +78,15 @@ static bool descriptor_valid(io_service_t service) {
     return valid;
 }
 
-/* Mirrors the Linux checks: USB transport, allowlisted VID/PID on the HID
- * device matching its USB ancestor, management interface number, and a
- * report descriptor with the expected HID++ short/long reports. */
+/*
+ * Mirrors the Linux checks: USB transport, allowlisted VID/PID on the HID
+ * device matching its USB ancestor, management interface number, and a report
+ * descriptor with the expected HID++ short/long reports.
+ *
+ * On success, fills the receiver path, physical identity, and product ID.
+ * Unsupported or inconsistent device ancestry returns false without opening
+ * the receiver.
+ */
 static bool identify(io_service_t service, struct receiver *receiver) {
     uint64_t vid, pid, number, usb_vid, usb_pid, id, location;
     if (!IOObjectConformsTo(service, kIOHIDDeviceKey)) return false;
@@ -83,6 +107,13 @@ static bool identify(io_service_t service, struct receiver *receiver) {
     return true;
 }
 
+/*
+ * Collect supported receivers, deduplicating physical devices.
+ *
+ * Appends to the caller's initialized receiver collection and rejects capacity
+ * overflow. Releases enumeration resources on every path; a failure may leave
+ * a partial collection.
+ */
 static int enumerate(struct receivers *receivers, struct error *err) {
     CFMutableDictionaryRef match = IOServiceMatching(kIOHIDDeviceKey);
     if (!match) return fail(err, UC_INTERNAL, ENOMEM, 0, "cannot allocate IOKit matching dictionary");
@@ -112,6 +143,12 @@ static int enumerate(struct receivers *receivers, struct error *err) {
     return status;
 }
 
+/*
+ * Resolve a receiver ID to an owned IOKit service reference.
+ *
+ * Validates the DevSrvsID syntax and rejects missing registry entries. On
+ * success, the caller must release *service with IOObjectRelease.
+ */
 static int lookup(const char *path, io_service_t *service, struct error *err) {
     uint64_t id;
     if (!receiver_registry_id(path, &id)) return fail(err, UC_RECEIVER, 0, 0, "on macOS --receiver takes an IOKit ID such as DevSrvsID:4294968397, not %s", path);
@@ -122,8 +159,14 @@ static int lookup(const char *path, io_service_t *service, struct error *err) {
     return UC_OK;
 }
 
-/* flock() on a per-user lock file keyed by the IORegistry entry ID. It
- * coordinates only cooperating unifyctl processes of the same user. */
+/*
+ * flock() on a per-user lock file keyed by the IORegistry entry ID. It
+ * coordinates only cooperating unifyctl processes of the same user.
+ *
+ * Returns an owned descriptor holding a nonblocking exclusive flock, or -1
+ * with err set. Closing the descriptor releases the lock; the lock file
+ * remains reusable.
+ */
 static int lock_receiver(const char *path, struct error *err) {
     char directory[PATH_MAX], name[PATH_MAX];
     size_t size = confstr(_CS_DARWIN_USER_TEMP_DIR, directory, sizeof(directory));
@@ -150,6 +193,13 @@ static int lock_receiver(const char *path, struct error *err) {
     return fd;
 }
 
+/*
+ * Translate an IOKit open failure into an application error.
+ *
+ * Distinguishes permission and exclusive-access failures from device
+ * disconnection and other I/O errors. Populates err and returns the
+ * corresponding application status.
+ */
 static int open_failure(IOReturn result, struct error *err) {
     if (result == kIOReturnNotPermitted || result == kIOReturnNotPrivileged) return fail(err, UC_ACCESS, 0, 0, "macOS denied access to the receiver (IOReturn 0x%08x); check Privacy & Security settings for this terminal", (unsigned)result);
     if (result == kIOReturnExclusiveAccess) return fail(err, UC_ACCESS, 0, 0, "receiver interface is held exclusively by another process");
@@ -157,6 +207,13 @@ static int open_failure(IOReturn result, struct error *err) {
     return fail(err, UC_IO, 0, 0, "cannot open receiver (IOReturn 0x%08x)", (unsigned)result);
 }
 
+/*
+ * Validate and lock the service, then open a shared HID session.
+ *
+ * Uses a non-seizing open so normal input remains available. Transfers the new
+ * session to the caller on success and releases all acquired resources on
+ * failure; service remains caller-owned.
+ */
 static int open_service(io_service_t service, struct receiver_session **session, struct transport *io, struct error *err) {
     struct receiver identity;
     if (!identify(service, &identity)) return fail(err, UC_RECEIVER, 0, 0, "device is not a supported Unifying management interface");
@@ -191,6 +248,13 @@ static int open_service(io_service_t service, struct receiver_session **session,
     return UC_OK;
 }
 
+/*
+ * Select and open a receiver, then initialize its transport session.
+ *
+ * A NULL explicit_path requests automatic selection. On success, the caller
+ * owns *session and io borrows its transport state; on failure, *session is
+ * NULL and acquired resources are released.
+ */
 int receiver_connect(const char *explicit_path, FILE *diagnostics,
                      struct receiver_session **session, struct transport *io,
                      struct error *err) {
@@ -216,6 +280,12 @@ int receiver_connect(const char *explicit_path, FILE *diagnostics,
     return status;
 }
 
+/*
+ * Release the receiver session and its transport resources.
+ *
+ * Accepts NULL. Closes backend resources and frees the session; any transport
+ * callbacks referring to it become invalid.
+ */
 void receiver_disconnect(struct receiver_session *session) {
     if (!session) return;
     iokit_close(&session->transport);

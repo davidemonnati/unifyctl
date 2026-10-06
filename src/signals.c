@@ -12,6 +12,12 @@ static int wake_read = -1, wake_write = -1;
 static struct sigaction previous_int, previous_term;
 static bool handlers_installed;
 
+/*
+ * Record cancellation and wake the transport while preserving errno.
+ *
+ * Uses only signal-safe state updates and a nonblocking pipe write. A full
+ * wake pipe may discard the byte, but the pending signal remains recorded.
+ */
 static void on_signal(int sig) {
     int saved = errno;
     received_signal = sig;
@@ -23,12 +29,26 @@ static void on_signal(int sig) {
     errno = saved;
 }
 
+/*
+ * Enable nonblocking I/O and close-on-exec on a descriptor.
+ *
+ * Preserves existing file status flags when adding O_NONBLOCK, then sets
+ * FD_CLOEXEC. Returns -1 on either fcntl failure; earlier flag changes may
+ * already have taken effect.
+ */
 static int nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL);
     if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return -1;
     return fcntl(fd, F_SETFD, FD_CLOEXEC);
 }
 
+/*
+ * Install cancellation handlers and their nonblocking wake pipe.
+ *
+ * Supports one active installation per process and saves prior SIGINT/SIGTERM
+ * handlers. Returns an error after releasing partially initialized resources
+ * if setup fails.
+ */
 int signals_install(struct error *err) {
     if (wake_read >= 0) return fail(err, UC_INTERNAL, 0, 0, "signal handling is already installed");
     int pipes[2];
@@ -61,6 +81,13 @@ int signals_install(struct error *err) {
     return UC_OK;
 }
 
+/*
+ * Restore previous signal handlers and close the wake pipe.
+ *
+ * Disables wake writes before closing descriptors and restores handlers only
+ * if installed. Repeated calls are safe; this does not clear the recorded
+ * signal value.
+ */
 void signals_restore(void) {
     signal_fd = -1;
     if (handlers_installed) {
@@ -73,15 +100,33 @@ void signals_restore(void) {
     wake_read = wake_write = -1;
 }
 
+/*
+ * Return the read end of the signal wake pipe.
+ *
+ * Returns -1 when no wake pipe is installed. The descriptor is borrowed and
+ * must not be closed by the caller.
+ */
 int signals_wake_fd(void) {
     return wake_read;
 }
 
+/*
+ * Return the pending cancellation status, or zero.
+ *
+ * Returns zero, UC_INTERRUPT, or UC_TERMINATE for the last recorded signal.
+ * Reading the status does not consume it.
+ */
 int signals_pending(void) {
     if (!received_signal) return 0;
     return received_signal == SIGINT ? UC_INTERRUPT : UC_TERMINATE;
 }
 
+/*
+ * Discard buffered wake bytes without clearing cancellation state.
+ *
+ * Reads until the nonblocking pipe has no more buffered bytes. Safe when no
+ * pipe exists; pending cancellation remains available through signals_pending.
+ */
 void signals_drain(void) {
     uint8_t bytes[64];
     if (wake_read < 0) return;

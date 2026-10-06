@@ -3,22 +3,45 @@
 #include <inttypes.h>
 #include <string.h>
 
+/*
+ * Read a stored receiver record matching the requested selector.
+ *
+ * Uses the long-read operation on register 0xb5. Returns the HID++ transaction
+ * status; the reply is valid for the requested selector only on success.
+ */
 static int info(struct hidpp *h, uint8_t selector, struct report *r, struct error *err) {
     uint8_t params[3] = {selector, 0, 0};
     return hidpp_request(h, 0x83, 0xb5, params, selector, r, err);
 }
 
-/* INVALID_VALUE on a valid B5 slot selector is the observed missing-record
- * convention (see docs/protocol.md). INVALID_ADDRESS is NOT an empty slot:
- * it can mean an unsupported register. UNKNOWN_DEVICE explicitly means absent. */
+/*
+ * INVALID_VALUE on a valid B5 slot selector is the observed missing-record
+ * convention (see docs/protocol.md). INVALID_ADDRESS is NOT an empty slot: it
+ * can mean an unsupported register. UNKNOWN_DEVICE explicitly means absent.
+ *
+ * Accepts INVALID_VALUE and UNKNOWN_DEVICE only when the status is
+ * UC_PROTOCOL. Other failures must not be interpreted as an empty slot.
+ */
 static bool missing(const struct error *err) {
     return err->status == UC_PROTOCOL && (err->protocol_code == 0x03 || err->protocol_code == 0x08);
 }
 
+/*
+ * Recognize absent or unsupported optional metadata records.
+ *
+ * Also accepts INVALID_ADDRESS for optional records. Transport failures remain
+ * fatal rather than being hidden as missing metadata.
+ */
 static bool unavailable_metadata(const struct error *err) {
     return missing(err) || (err->status == UC_PROTOCOL && err->protocol_code == 0x02);
 }
 
+/*
+ * Return a display name for the device type, or unknown.
+ *
+ * Maps known receiver device-type codes to static strings. The caller must not
+ * free the returned pointer.
+ */
 static const char *type_name(uint8_t type) {
     switch (type) {
     case 1: return "keyboard";
@@ -31,6 +54,13 @@ static const char *type_name(uint8_t type) {
     }
 }
 
+/*
+ * Read one pairing slot and optionally its serial number and name.
+ *
+ * Requires a slot from 1 through 6 and initializes d before reading. An empty
+ * slot succeeds with paired=false; optional missing metadata stays unknown,
+ * while transport and malformed-data errors propagate.
+ */
 int device_read(struct hidpp *h, unsigned slot, struct device *d, bool metadata, struct error *err) {
     if (slot < 1 || slot > SLOT_COUNT) return fail(err, UC_USAGE, 0, 0, "slot must be 1–6");
     *d = (struct device){.slot = slot};
@@ -67,6 +97,13 @@ int device_read(struct hidpp *h, unsigned slot, struct device *d, bool metadata,
     return UC_OK;
 }
 
+/*
+ * Read all pairing slots, stopping at the first error.
+ *
+ * Fills the array in slot order and optionally reads metadata. On failure,
+ * earlier entries remain populated and later entries are not guaranteed to be
+ * initialized.
+ */
 int devices_read(struct hidpp *h, struct device devices[SLOT_COUNT], bool metadata, struct error *err) {
     for (unsigned slot = 1; slot <= SLOT_COUNT; slot++) {
         int status = device_read(h, slot, &devices[slot - 1], metadata, err);
@@ -75,6 +112,12 @@ int devices_read(struct hidpp *h, struct device devices[SLOT_COUNT], bool metada
     return UC_OK;
 }
 
+/*
+ * Print one device row, marking unavailable fields as unknown.
+ *
+ * Writes a row to out using the stored identity and observed link state. Does
+ * not query the receiver or filter out unpaired entries.
+ */
 void device_print(FILE *out, const struct device *d) {
     fprintf(out, "%u  %-14s %-9s %04x ", d->slot,
             d->name[0] ? d->name : "unknown", type_name(d->type), (unsigned)d->wpid);
@@ -85,6 +128,12 @@ void device_print(FILE *out, const struct device *d) {
     fprintf(out, " %s\n", link);
 }
 
+/*
+ * Print stored pairings with a heading, or an empty-list message.
+ *
+ * Skips unpaired slots and prints the heading once. Uses only the supplied
+ * snapshot and performs no receiver I/O.
+ */
 void devices_print(FILE *out, const struct device devices[SLOT_COUNT]) {
     unsigned count = 0;
     for (unsigned i = 0; i < SLOT_COUNT; i++) {
@@ -96,6 +145,12 @@ void devices_print(FILE *out, const struct device devices[SLOT_COUNT]) {
     if (!count) fputs("No paired devices.\n", out);
 }
 
+/*
+ * Compare stored device identities, excluding transient link state.
+ *
+ * Compares slot, occupancy, WPID, type, serial availability/value, and name.
+ * Link state is intentionally ignored when rechecking removal identity.
+ */
 bool device_same(const struct device *a, const struct device *b) {
     return a->slot == b->slot && a->paired == b->paired && a->wpid == b->wpid &&
            a->type == b->type && a->has_serial == b->has_serial &&

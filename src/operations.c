@@ -12,6 +12,13 @@ struct pairing_events {
 
 enum { PAIRING_VERIFY_MS = 5000 };
 
+/*
+ * Track pairing-window state and device connection notifications.
+ *
+ * Context must point to pairing_events and reports must already be validated
+ * by the dispatcher. Updates slot connectivity/WPID or the receiver's closure
+ * result without issuing I/O.
+ */
 static void pairing_notification(void *context, const struct report *r) {
     struct pairing_events *events = context;
     const uint8_t *p = r->bytes;
@@ -25,6 +32,12 @@ static void pairing_notification(void *context, const struct report *r) {
     } else if (p[2] == 0x40 && p[3] == 2) events->connected[p[1] - 1] = false;
 }
 
+/*
+ * Translate a pairing-window error code into an operation failure.
+ *
+ * Maps receiver timeout codes to UC_TIMEOUT and rejection codes to
+ * UC_PROTOCOL. Unknown codes are preserved in the diagnostic text.
+ */
 static int pairing_failure(uint8_t code, struct error *err) {
     switch (code) {
     case 1: return fail(err, UC_TIMEOUT, 0, 0, "pairing window timed out");
@@ -35,11 +48,25 @@ static int pairing_failure(uint8_t code, struct error *err) {
     }
 }
 
+/*
+ * Write a receiver register and wait for its acknowledgement.
+ *
+ * Sends exactly three parameter bytes with operation 0x80. Returns the
+ * transaction status; an acknowledgement alone does not verify a pairing-state
+ * change.
+ */
 static int write_register(struct hidpp *h, uint8_t reg, const uint8_t params[3], struct error *err) {
     struct report reply;
     return hidpp_request(h, 0x80, reg, params, -1, &reply, err);
 }
 
+/*
+ * Process notifications until the pause expires or an error occurs.
+ *
+ * The until argument is an absolute monotonic deadline. Treats expiry as a
+ * successful pause and clears its timeout error, while propagating other
+ * failures.
+ */
 static int pause_events(struct hidpp *h, int64_t until, struct error *err) {
     while (h->io.now(h->io.context) < until) {
         int status = hidpp_pump(h, until, err);
@@ -52,6 +79,14 @@ static int pause_events(struct hidpp *h, int64_t until, struct error *err) {
     return UC_OK;
 }
 
+/*
+ * Find and validate a newly stored pairing within the verification deadline.
+ *
+ * Compares snapshots against before, rejecting changes to existing slots or
+ * multiple additions. Fills added only after rereading the new device; narrows
+ * the session deadline to at most five seconds and checks notifications where
+ * required.
+ */
 static int verify_new(struct hidpp *h, const struct device before[SLOT_COUNT],
                       struct pairing_events *events, struct device *added, struct error *err) {
     int64_t deadline = h->io.now(h->io.context) + PAIRING_VERIFY_MS;
@@ -88,10 +123,15 @@ static int verify_new(struct hidpp *h, const struct device before[SLOT_COUNT],
     return fail(err, UC_PROTOCOL, 0, 0, "no new stored pairing verified; outcome uncertain; run list");
 }
 
-/* Cleanup never determines pairing success. A timed-out transaction has no
- * sequence number; its late acknowledgement can be indistinguishable from a
- * close acknowledgement. Close is still attempted once, but reported unverified.
- * Flags are restored only after a completed cleanup transaction. */
+/*
+ * Attempt bounded receiver cleanup without using it to determine pairing
+ * success.
+ *
+ * Suppresses cancellation during a two-second cleanup budget, then clears the
+ * callback and operation deadline. For a poisoned session, sends an unverified
+ * close only if closure is not already known and skips flag restoration;
+ * reported cleanup status is separate from pairing success.
+ */
 static int cleanup_pairing(struct hidpp *h, bool opened, bool closed, bool flags_changed,
                            const uint8_t original[3], FILE *diagnostics) {
     struct error cleanup_error = {0};
@@ -124,6 +164,14 @@ static int cleanup_pairing(struct hidpp *h, bool opened, bool closed, bool flags
     return status;
 }
 
+/*
+ * Open a pairing window, verify a new device, and clean up receiver state.
+ *
+ * Requires a timeout of 1-255 seconds and a free slot. Temporarily enables
+ * notifications, tracks pairing events, and verifies stored state before
+ * printing success; cleanup failures still return an error after a device has
+ * paired.
+ */
 int operation_add(struct hidpp *h, unsigned timeout, const struct operation_ui *ui, struct error *err) {
     if (timeout < 1 || timeout > 255) return fail(err, UC_USAGE, 0, 0, "pairing timeout must be 1–255 seconds");
     struct device before[SLOT_COUNT], added = {0};

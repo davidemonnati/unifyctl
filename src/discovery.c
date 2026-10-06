@@ -2,10 +2,22 @@
 
 #include <string.h>
 
+/*
+ * Check the USB identity against the supported management interfaces.
+ *
+ * Accepts Logitech VID 0x046d, products 0xc52b or 0xc532, and interface 2.
+ * This identity check does not replace report-descriptor validation.
+ */
 bool receiver_supported(unsigned vendor, unsigned product, unsigned interface) {
     return vendor == 0x046d && (product == 0xc52b || product == 0xc532) && interface == 2;
 }
 
+/*
+ * Parse a nonzero DevSrvsID value with overflow checking.
+ *
+ * Requires the exact DevSrvsID: prefix followed by decimal digits. Writes id
+ * only on success and rejects zero or uint64_t overflow.
+ */
 bool receiver_registry_id(const char *text, uint64_t *id) {
     static const char prefix[] = "DevSrvsID:";
     if (strncmp(text, prefix, sizeof(prefix) - 1)) return false;
@@ -23,6 +35,12 @@ bool receiver_registry_id(const char *text, uint64_t *id) {
     return true;
 }
 
+/*
+ * Select the sole receiver; reject missing or ambiguous candidates.
+ *
+ * Returns UC_RECEIVER unless count is exactly one. Writes index=0 on success
+ * and leaves index untouched on failure.
+ */
 int receiver_choose(const struct receivers *receivers, size_t *index, struct error *err) {
     if (!receivers->count) return fail(err, UC_RECEIVER, 0, 0, "no supported Unifying receiver found");
     if (receivers->count != 1) return fail(err, UC_RECEIVER, 0, 0, "multiple receivers found; select one with --receiver PATH");
@@ -30,7 +48,13 @@ int receiver_choose(const struct receivers *receivers, size_t *index, struct err
     return UC_OK;
 }
 
-/* Minimal bounds-checked HID item walker. Totals exclude the report ID byte. */
+/*
+ * Minimal bounds-checked HID item walker. Totals exclude the report ID byte.
+ *
+ * Requires vendor-page short and long input/output reports with 48 and 152
+ * payload bits. Rejects unsupported long items, truncated items, invalid
+ * global-stack use, and excessive report sizes.
+ */
 bool receiver_descriptor(const uint8_t *bytes, size_t size) {
     struct globals { uint32_t page, bits, count, id; } g = {0}, stack[16];
     size_t depth = 0;
