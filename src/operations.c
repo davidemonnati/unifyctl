@@ -246,6 +246,11 @@ int operation_add(struct hidpp *h, unsigned timeout, const struct operation_ui *
     return status;
 }
 
+/* The caller has already obtained confirmation (or ui->yes authorization) for
+ * before. Recheck its identity, send one unpair request, and verify absence with
+ * a 2-second polling budget after acknowledgement. Never retry the write. Report
+ * success only after verification; failed writes/verification may have changed
+ * receiver state. Shared by single-slot and bulk removal; does not prompt. */
 static int remove_confirmed(struct hidpp *h, const struct device *before,
                             const struct operation_ui *ui, struct error *err) {
     unsigned slot = before->slot;
