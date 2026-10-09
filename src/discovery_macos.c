@@ -19,6 +19,7 @@ enum { MAX_DESCRIPTOR = 4096 };
 struct receiver_session {
     struct iokit_transport transport;
     int lock_fd;
+    struct receiver identity;
 };
 
 /*
@@ -225,6 +226,7 @@ static int open_service(io_service_t service, struct receiver_session **session,
         return fail(err, UC_INTERNAL, ENOMEM, 0, "cannot allocate receiver session");
     }
     s->lock_fd = lock_fd;
+    s->identity = identity;
     IOHIDDeviceRef device = IOHIDDeviceCreate(kCFAllocatorDefault, service);
     if (!device) {
         close(lock_fd);
@@ -291,4 +293,8 @@ void receiver_disconnect(struct receiver_session *session) {
     iokit_close(&session->transport);
     if (session->lock_fd >= 0) close(session->lock_fd);
     free(session);
+}
+
+const struct receiver *receiver_identity(const struct receiver_session *session) {
+    return &session->identity;
 }

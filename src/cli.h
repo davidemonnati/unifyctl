@@ -3,10 +3,11 @@
 
 #include "common.h"
 
-enum command { CMD_NONE, CMD_HELP, CMD_LIST, CMD_ADD, CMD_REMOVE };
+enum command { CMD_NONE, CMD_HELP, CMD_LIST, CMD_ADD, CMD_REMOVE, CMD_EXPORT };
 struct options {
     enum command command;
     const char *receiver;
+    const char *output;
     bool help;
     bool debug;
     bool yes;

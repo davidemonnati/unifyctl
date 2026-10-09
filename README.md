@@ -43,7 +43,7 @@ The build selects the native IOKit backend automatically and links the system `I
 
 ### Build targets and installation
 
-The executable is `build/unifyctl`. `make install` installs only the binary under `/usr/local/bin`; override `PREFIX` and `DESTDIR` as needed. It does not install permission rules automatically. Python is used only by the CLI tests. Runtime dependencies are libc and libudev on Linux, and system frameworks on macOS.
+The executable is `build/unifyctl`. `make install` installs only the binary under `/usr/local/bin`; override `PREFIX` and `DESTDIR` as needed. It does not install permission rules automatically. Python is used only by the CLI and export JSON tests. Runtime dependencies are libc and libudev on Linux, and system frameworks on macOS.
 
 On other platforms, `make test` builds the portable core with a backend that rejects hardware commands. This supports help, parsing, protocol, operation, and POSIX transport tests.
 
@@ -76,6 +76,7 @@ Another process can open the same interface. Quit Logitech Options/Options+, Log
 unifyctl help
 unifyctl --help
 unifyctl list --help
+unifyctl export --help
 unifyctl add --help
 unifyctl remove --help
 
@@ -83,6 +84,8 @@ unifyctl list
 unifyctl --receiver /dev/hidraw2 list                # Linux
 unifyctl --receiver DevSrvsID:4294968397 list        # macOS
 unifyctl --receiver /dev/hidraw2 --debug list
+unifyctl export -o devices.json
+unifyctl --receiver DevSrvsID:4294968397 export --output devices.json
 
 # These commands change receiver pairings. Run only when intended.
 unifyctl add --timeout 30
@@ -105,6 +108,108 @@ Connection status is `unknown` in read-only listing: the tool does not enable or
 `remove --all` removes all stored pairings, including offline devices, on the selected receiver. It lists the devices and asks for confirmation once; use `--yes` to skip confirmation. A slot and `--all` cannot be combined. An empty receiver succeeds without prompting. Each listed device is rechecked before removal and its empty slot verified afterward. The operation stops on the first error or interruption and reports how many removals were verified; earlier removals are not rolled back. Devices paired concurrently after the initial listing are not included. Receiver selection follows the same `--receiver` rules as other commands.
 
 Do not run another receiver manager (including Solaar, ltunify, or Logitech Options+) concurrently with pairing operations. An advisory lock prevents overlapping `unifyctl` sessions, but other programs and kernel clients may not honor it. On macOS the lock file lives in the per-user temporary directory, so it coordinates only sessions of the same user. Protocol replies lack transaction sequence numbers, so external interference cannot always be detected.
+
+## JSON inventory export
+
+`unifyctl [--receiver PATH] export -o FILE` saves every occupied stored slot,
+including sleeping and powered-off devices. `--output FILE` is the long form of
+`-o`; a destination is required except for `export --help`. To use a filename
+beginning with `-`, prefix it with `./`. There is no stdout export or overwrite
+option. Successful export is silent and exits 0; diagnostics go to stderr.
+
+Export sends only HID++ `0x83` GET requests to `0xB5`, using the same complete
+six-slot scan as `list`. It does not enable notifications, pair, unpair, or write
+receiver registers. Optional unsupported name/serial records become `null`;
+communication failures abort the export. Connectivity remains `unknown`, even
+if incidental connection notifications arrive during the scan. The scan is
+sequential, not an atomic receiver snapshot; stop competing receiver managers
+because concurrent changes or interleaved traffic cannot always be detected.
+
+This is a **device inventory, not a restorable pairing backup**. It contains no
+pairing credentials or link encryption keys. Names, WPIDs, slots, and optional
+serials cannot recreate a working wireless pairing. There is no import command.
+The file does contain identifying information; review it before sharing.
+
+Export validation: `make test` and `make sanitize` passed on macOS 27.0 arm64
+on October 9, 2026, including mock receiver and injected filesystem failures.
+Linux execution and physical receiver export remain untested for this feature.
+
+### Version 1 schema
+
+Example (the receiver path is platform-specific):
+
+```json
+{
+  "schema_version": 1,
+  "kind": "unifyctl-inventory",
+  "restorable_pairings": false,
+  "receiver": {
+    "family": "unifying",
+    "usb_vendor_id": "046d",
+    "usb_product_id": "c52b",
+    "path": "/dev/hidraw2",
+    "slot_capacity": 6
+  },
+  "devices": [
+    {"slot": 1, "wpid": "4001", "type": 2, "serial": "12345678", "name": "Mouse", "connectivity": "unknown"}
+  ]
+}
+```
+
+All shown keys are always present. No timestamps or live peripheral queries are
+needed. JSON is UTF-8, with a trailing newline.
+
+| Field | Type and meaning |
+|---|---|
+| `schema_version` | Integer, exactly `1`; consumers should reject unsupported versions. |
+| `kind` | String, exactly `unifyctl-inventory`. |
+| `restorable_pairings` | Boolean, always `false`. |
+| `receiver.family` | String, exactly `unifying`; no Bolt/Lightspeed compatibility implied. |
+| `receiver.usb_vendor_id` | Four lowercase hexadecimal digits, `046d`. |
+| `receiver.usb_product_id` | Four lowercase hexadecimal digits from validated discovery: currently `c52b` or `c532`. |
+| `receiver.path` | Selected management-interface path/ID from discovery, not a persistent receiver serial or portable identity. Its source is at most 4095 bytes. |
+| `receiver.slot_capacity` | Integer, exactly `6`. |
+| `devices` | Array of 0–6 occupied slots, in ascending order; empty inventory is `[]`. |
+| `devices[].slot` | Unique integer, 1–6. Empty slots are omitted. |
+| `devices[].wpid` | Four lowercase hexadecimal digits, preserving leading zeroes; a model identifier, not a unique identity. |
+| `devices[].type` | Integer, 0–255, preserving the raw firmware code; known values include keyboard `1` and mouse `2`. Unknown/reserved values are not guessed. |
+| `devices[].serial` | Eight lowercase hexadecimal digits, including zero if returned, or `null` if unavailable. |
+| `devices[].name` | Display string or `null` for unavailable/empty names. Source names are at most 14 bytes. |
+| `devices[].connectivity` | String, always `unknown`; separate from stored slot occupancy. |
+
+Names retain the existing display policy: ASCII controls and DEL become `?`.
+For names and receiver paths, each invalid UTF-8 byte becomes U+FFFD; quotes,
+backslashes, and JSON control characters are escaped. This also handles a
+firmware name truncated within a multibyte character. Name output can therefore
+exceed 14 UTF-8 bytes (up to 42 decoded bytes); it is not a lossless raw record.
+Receiver firmware and receiver serial are not queried or included.
+
+### File safety and failures
+
+The destination must not exist, including as a symlink or directory. After a
+successful scan, export creates a private temporary file (`0600`, further
+restricted by the process umask) in the destination directory. It checks writes,
+flushes and synchronizes file data, checks close, then publishes with a hard link
+that atomically fails if the destination exists. It removes the temporary name
+afterward. Existing files are never truncated or replaced, even if another
+process creates the destination while export is running.
+
+A receiver read failure creates no output file. A write, flush, synchronization,
+close, or pre-publication cancellation failure removes the temporary file and
+leaves the destination absent. Filesystem failures exit 5; read failures retain
+the existing protocol/transport exit codes, and signals retain 130/143. If
+cleanup fails, the diagnostic identifies the remaining temporary file; if
+publication already succeeded, it explicitly says the export was published.
+Use a new filename for another export, or deliberately remove the old file.
+
+The target filesystem must support hard links; otherwise publication fails
+without replacing the destination. This guarantees atomic visibility of a
+completed file, not persistence of the directory entry across power loss.
+SIGKILL or a crash may leave a `.unifyctl-export-*` temporary file; after the
+process has stopped, it can be removed. Cancellation is checked before file work
+and immediately before publication; a signal racing with publication may leave
+a complete output file. Filesystem calls use normal blocking POSIX I/O and do
+not have application-enforced deadlines.
 
 ## Errors and troubleshooting
 

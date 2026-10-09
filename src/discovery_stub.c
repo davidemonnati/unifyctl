@@ -29,3 +29,8 @@ int receiver_connect(const char *explicit_path, FILE *diagnostics,
 void receiver_disconnect(struct receiver_session *session) {
     (void)session;
 }
+
+const struct receiver *receiver_identity(const struct receiver_session *session) {
+    (void)session;
+    return NULL;
+}

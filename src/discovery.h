@@ -29,6 +29,8 @@ struct receiver_session;
 int receiver_connect(const char *explicit_path, FILE *diagnostics,
                      struct receiver_session **session, struct transport *io,
                      struct error *err);
+/* Validated identity borrowed from a live session; no receiver I/O. */
+const struct receiver *receiver_identity(const struct receiver_session *session);
 void receiver_disconnect(struct receiver_session *session);
 
 #endif
