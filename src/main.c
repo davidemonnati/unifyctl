@@ -2,6 +2,7 @@
 #include "devices.h"
 #include "discovery.h"
 #include "operations.h"
+#include "export.h"
 
 #include <unistd.h>
 
@@ -37,7 +38,8 @@ int main(int argc, char **argv) {
         struct device devices[SLOT_COUNT];
         status = devices_read(&h, devices, true, &err);
         if (!status) devices_print(stdout, devices);
-    } else if (options.command == CMD_ADD) status = operation_add(&h, options.timeout, &ui, &err);
+    } else if (options.command == CMD_EXPORT) status = operation_export(&h, receiver_identity(session), options.output, &err);
+    else if (options.command == CMD_ADD) status = operation_add(&h, options.timeout, &ui, &err);
     else if (options.command == CMD_REMOVE) status = options.all
         ? operation_remove_all(&h, &ui, &err)
         : operation_remove(&h, options.slot, &ui, &err);

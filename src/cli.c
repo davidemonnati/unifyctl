@@ -40,6 +40,9 @@ int cli_parse(int argc, char **argv, struct options *o, struct error *err) {
         else if (!strcmp(arg, "--receiver")) {
             if (o->receiver || ++i == argc || !*argv[i] || argv[i][0] == '-') return fail(err, UC_USAGE, 0, 0, "--receiver requires one path");
             o->receiver = argv[i];
+        } else if (!strcmp(arg, "-o") || !strcmp(arg, "--output")) {
+            if (o->output || ++i == argc || !*argv[i] || argv[i][0] == '-') return fail(err, UC_USAGE, 0, 0, "-o/--output requires one file path");
+            o->output = argv[i];
         } else if (!strcmp(arg, "--timeout")) {
             if (timeout_seen || ++i == argc || !number(argv[i], 255, &o->timeout)) return fail(err, UC_USAGE, 0, 0, "--timeout requires an integer from 1 to 255 seconds");
             timeout_seen = true;
@@ -47,6 +50,7 @@ int cli_parse(int argc, char **argv, struct options *o, struct error *err) {
         else if (o->command == CMD_NONE) {
             if (!strcmp(arg, "help")) o->command = CMD_HELP;
             else if (!strcmp(arg, "list")) o->command = CMD_LIST;
+            else if (!strcmp(arg, "export")) o->command = CMD_EXPORT;
             else if (!strcmp(arg, "add")) o->command = CMD_ADD;
             else if (!strcmp(arg, "remove")) o->command = CMD_REMOVE;
             else return fail(err, UC_USAGE, 0, 0, "unknown command: %s", arg);
@@ -54,6 +58,8 @@ int cli_parse(int argc, char **argv, struct options *o, struct error *err) {
             if (!number(arg, 6, &o->slot)) return fail(err, UC_USAGE, 0, 0, "slot must be an integer from 1 to 6");
         } else return fail(err, UC_USAGE, 0, 0, "unexpected argument: %s", arg);
     }
+    if (o->output && o->command != CMD_EXPORT) return fail(err, UC_USAGE, 0, 0, "-o/--output is only valid with export");
+    if (o->command == CMD_EXPORT && !o->output && !o->help) return fail(err, UC_USAGE, 0, 0, "export requires -o FILE");
     if (timeout_seen && o->command != CMD_ADD) return fail(err, UC_USAGE, 0, 0, "--timeout is only valid with add");
     if (o->yes && o->command != CMD_REMOVE) return fail(err, UC_USAGE, 0, 0, "--yes is only valid with remove");
     if (o->all && o->command != CMD_REMOVE) return fail(err, UC_USAGE, 0, 0, "--all is only valid with remove");
@@ -80,6 +86,13 @@ void cli_help(FILE *out, enum command command) {
               "No arguments or command-specific flags. Does not change receiver state.\n"
               "Example: unifyctl --receiver /dev/hidraw2 list\n"
               "         unifyctl --receiver DevSrvsID:4294968397 list   (macOS)\n", out);
+        break;
+    case CMD_EXPORT:
+        fputs("Usage: unifyctl [OPTIONS] export -o FILE\n\n"
+              "Export all stored devices, including offline devices, as JSON inventory.\n"
+              "  -o, --output FILE  Required destination; must not already exist.\n"
+              "Uses read requests only. The inventory cannot restore pairings.\n"
+              "Example: unifyctl export -o devices.json\n", out);
         break;
     case CMD_ADD:
         fputs("Usage: unifyctl [OPTIONS] add [--timeout SECONDS]\n\n"
@@ -108,6 +121,7 @@ void cli_help(FILE *out, enum command command) {
               "  add [--timeout N]    Pair a device; default 30 seconds, range 1–255.\n"
               "  remove SLOT [--yes]  Unpair slot 1–6; confirms unless --yes is given.\n"
               "  remove --all [--yes] Unpair all devices on the selected receiver.\n"
+              "  export -o FILE       Save a JSON inventory without overwriting FILE.\n"
               "  help                 Show this help.\n\n"
               "Examples: unifyctl list\n"
               "          unifyctl add --timeout 30\n"

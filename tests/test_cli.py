@@ -5,6 +5,8 @@ import tempfile
 
 binary = sys.argv[1]
 good = [
+    ["export", "--help"], ["export", "-o", "devices.json", "--help"],
+    ["--receiver", "/no/device", "export", "--output", "out.json", "--help"],
     ["help"], ["--help"], ["list", "--help"], ["add", "--help"],
     ["remove", "--help"], ["--receiver", "/no/such/device", "list", "--help"],
     ["add", "--timeout", "255", "--help"],
@@ -13,6 +15,10 @@ good = [
     ["--all", "remove", "--help"],
 ]
 bad = [
+    ["export"], ["export", "-o"], ["export", "-o", ""],
+    ["export", "-o", "--help"], ["export", "-o", "a", "--output", "b"],
+    ["list", "-o", "a"], ["export", "-o", "a", "extra"],
+    ["export", "--yes"], ["export", "--all"], ["export", "--timeout", "1"],
     [], ["wat"], ["list", "extra"], ["--receiver"], ["--wat"], ["remove"],
     ["remove", "0"], ["remove", "7"], ["remove", "-1"], ["remove", "1x"],
     ["remove", "999999999999999999999999"], ["remove", "1", "2"],

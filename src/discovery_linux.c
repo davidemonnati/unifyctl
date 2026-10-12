@@ -103,7 +103,7 @@ static int enumerate(struct udev *udev, struct receivers *receivers, struct erro
  * and HID++ reports. Returns an owned nonblocking, locked descriptor, or -1
  * with err set and any opened descriptor closed.
  */
-static int validated_open(struct udev *udev, const char *path, struct error *err) {
+static int validated_open(struct udev *udev, const char *path, struct receiver *selected, struct error *err) {
     struct stat before, after;
     if (stat(path, &before) < 0) {
         fail(err, UC_ACCESS, errno, 0, "cannot access receiver path %s", path);
@@ -160,6 +160,7 @@ static int validated_open(struct udev *udev, const char *path, struct error *err
         fail(err, UC_ACCESS, errno, 0, "receiver is locked by another unifyctl process");
         goto failed;
     }
+    *selected = identity;
     return fd;
 failed:
     close(fd);
@@ -173,21 +174,21 @@ failed:
  * exactly one supported receiver and prints candidates when selection is
  * ambiguous; the caller owns the returned descriptor.
  */
-static int open_receiver(const char *explicit_path, FILE *diagnostics, struct error *err) {
+static int open_receiver(const char *explicit_path, FILE *diagnostics, struct receiver *selected, struct error *err) {
     struct udev *udev = udev_new();
     if (!udev) {
         fail(err, UC_INTERNAL, ENOMEM, 0, "cannot initialize libudev");
         return -1;
     }
     int fd = -1;
-    if (explicit_path) fd = validated_open(udev, explicit_path, err);
+    if (explicit_path) fd = validated_open(udev, explicit_path, selected, err);
     else {
         struct receivers *receivers = calloc(1, sizeof(*receivers));
         if (!receivers) fail(err, UC_INTERNAL, ENOMEM, 0, "cannot allocate receiver list");
         else {
             size_t index = 0;
             if (!enumerate(udev, receivers, err)) {
-                if (!receiver_choose(receivers, &index, err)) fd = validated_open(udev, receivers->entries[index].path, err);
+                if (!receiver_choose(receivers, &index, err)) fd = validated_open(udev, receivers->entries[index].path, selected, err);
                 else {
                     for (size_t i = 0; i < receivers->count; i++) fprintf(diagnostics, "  %s  Logitech Unifying 046d:%04x\n", receivers->entries[i].path, (unsigned)receivers->entries[i].product);
                 }
@@ -201,6 +202,7 @@ static int open_receiver(const char *explicit_path, FILE *diagnostics, struct er
 
 struct receiver_session {
     struct raw_transport raw;
+    struct receiver identity;
 };
 
 /*
@@ -214,13 +216,15 @@ int receiver_connect(const char *explicit_path, FILE *diagnostics,
                      struct receiver_session **session, struct transport *io,
                      struct error *err) {
     *session = NULL;
-    int fd = open_receiver(explicit_path, diagnostics, err);
+    struct receiver identity;
+    int fd = open_receiver(explicit_path, diagnostics, &identity, err);
     if (fd < 0) return (int)err->status;
     struct receiver_session *s = calloc(1, sizeof(*s));
     if (!s) {
         close(fd);
         return fail(err, UC_INTERNAL, ENOMEM, 0, "cannot allocate receiver session");
     }
+    s->identity = identity;
     int status = raw_init(&s->raw, fd, io, err);
     if (status) {
         raw_close(&s->raw);
@@ -241,4 +245,8 @@ void receiver_disconnect(struct receiver_session *session) {
     if (!session) return;
     raw_close(&session->raw);
     free(session);
+}
+
+const struct receiver *receiver_identity(const struct receiver_session *session) {
+    return &session->identity;
 }
