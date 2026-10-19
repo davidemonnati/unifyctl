@@ -20,5 +20,6 @@ int devices_read(struct hidpp *h, struct device devices[SLOT_COUNT], bool metada
 void device_print(FILE *out, const struct device *d);
 void devices_print(FILE *out, const struct device devices[SLOT_COUNT]);
 bool device_same(const struct device *a, const struct device *b);
+const char *device_type_name(uint8_t type);
 
 #endif

@@ -12,6 +12,8 @@ struct operation_ui {
 };
 
 int operation_add(struct hidpp *h, unsigned timeout, const struct operation_ui *ui, struct error *err);
+/* slot=0 lists inventory and prompts once; explicit slots never read stdin. */
+int operation_info(struct hidpp *h, unsigned slot, const struct operation_ui *ui, struct error *err);
 /* Display and confirm a stored pairing unless ui->yes is set, then recheck
  * identity and unpair once. Return UC_OK only after verifying the slot is empty;
  * an initially empty slot is UC_PROTOCOL. Failures populate err. */

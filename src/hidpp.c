@@ -180,3 +180,64 @@ int hidpp_cleanup_write(struct hidpp *h, uint8_t reg, const uint8_t params[3],
     trace(h, "TX cleanup", request, sizeof(request));
     return h->io.send(h->io.context, request, sizeof(request), deadline, err);
 }
+
+/* Independent FAP transaction path. A feature index may look like a receiver
+ * notification sub-ID; passing these packets to dispatch() would misdecode it.
+ * Software ID 0xe distinguishes responses from broadcast notifications. */
+int hidpp_feature_request(struct hidpp *h, unsigned slot, uint8_t feature,
+                          unsigned function, const uint8_t params[3],
+                          size_t payload_size, struct report *reply, struct error *err) {
+    *reply = (struct report){0};
+    h->peripheral_unreachable = false;
+    if (h->pending || h->poisoned) return fail(err, UC_PROTOCOL, 0, 0, "HID++ session unavailable after an incomplete transaction");
+    if (slot < 1 || slot > SLOT_COUNT || function > 15 || payload_size > 16) return fail(err, UC_INTERNAL, 0, 0, "invalid peripheral query");
+    uint8_t request[] = {0x10, (uint8_t)slot, feature, (uint8_t)((function << 4) | 0x0e), params[0], params[1], params[2]};
+    int64_t deadline = h->io.now(h->io.context) + 2000;
+    if (h->deadline && deadline > h->deadline) deadline = h->deadline;
+    int status = h->io.cancelled(h->io.context);
+    if (status) return fail(err, (enum status)status, 0, 0, "peripheral query cancelled");
+    if (h->io.now(h->io.context) >= deadline) return fail(err, UC_TIMEOUT, 0, 0, "information query deadline expired");
+    h->pending = true;
+    bool link_lost = false;
+    trace(h, "TX", request, sizeof(request));
+    status = h->io.send(h->io.context, request, sizeof(request), deadline, err);
+    while (!status) {
+        status = h->io.cancelled(h->io.context);
+        if (status) {
+            status = fail(err, (enum status)status, 0, 0, "peripheral query cancelled");
+            break;
+        }
+        if (h->io.now(h->io.context) >= deadline) {
+            status = fail(err, UC_TIMEOUT, 0, 0, "peripheral reply timed out");
+            break;
+        }
+        status = receive(h, reply, deadline, err);
+        if (status) break;
+        if (!reply->length || reply->bytes[1] != slot) continue;
+        const uint8_t *p = reply->bytes;
+        /* This notification alone never completes a request. A subsequent
+         * matching RAP resource error can be explained by explicit link loss;
+         * a resource error on its own remains an operational failure. */
+        if (reply->length == HIDPP_SHORT && p[2] == 0x41 && p[3] == 4) link_lost = (p[4] & 0x40) != 0;
+        if ((p[2] == 0x8f || p[2] == 0xff) && p[3] == feature && p[4] == request[3]) {
+            size_t expected = p[2] == 0x8f ? HIDPP_SHORT : HIDPP_LONG;
+            if (reply->length != expected || !p[5]) {
+                status = fail(err, UC_PROTOCOL, 0, 0, "malformed peripheral error reply");
+                break;
+            }
+            h->pending = false;
+            h->peripheral_unreachable = link_lost && p[2] == 0x8f && p[5] == 9;
+            return fail(err, UC_PROTOCOL, 0, p[5], "peripheral slot %u rejected feature 0x%02x function %u", slot, feature, function);
+        }
+        if (p[2] != feature || p[3] != request[3]) continue;
+        if (reply->length < 4 + payload_size) {
+            status = fail(err, UC_PROTOCOL, 0, 0, "truncated peripheral reply payload");
+            break;
+        }
+        h->pending = false;
+        return UC_OK;
+    }
+    h->pending = false;
+    h->poisoned = true;
+    return status;
+}

@@ -42,7 +42,7 @@ static bool unavailable_metadata(const struct error *err) {
  * Maps known receiver device-type codes to static strings. The caller must not
  * free the returned pointer.
  */
-static const char *type_name(uint8_t type) {
+const char *device_type_name(uint8_t type) {
     switch (type) {
     case 1: return "keyboard";
     case 2: return "mouse";
@@ -120,7 +120,7 @@ int devices_read(struct hidpp *h, struct device devices[SLOT_COUNT], bool metada
  */
 void device_print(FILE *out, const struct device *d) {
     fprintf(out, "%u  %-14s %-9s %04x ", d->slot,
-            d->name[0] ? d->name : "unknown", type_name(d->type), (unsigned)d->wpid);
+            d->name[0] ? d->name : "unknown", device_type_name(d->type), (unsigned)d->wpid);
     if (d->has_serial) fprintf(out, "%08" PRIx32, d->serial);
     else fputs("unknown ", out);
     const char *link = d->link == LINK_CONNECTED ? "connected" :

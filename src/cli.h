@@ -3,7 +3,7 @@
 
 #include "common.h"
 
-enum command { CMD_NONE, CMD_HELP, CMD_LIST, CMD_ADD, CMD_REMOVE, CMD_EXPORT };
+enum command { CMD_NONE, CMD_HELP, CMD_LIST, CMD_ADD, CMD_REMOVE, CMD_EXPORT, CMD_INFO };
 struct options {
     enum command command;
     const char *receiver;

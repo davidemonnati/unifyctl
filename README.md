@@ -2,7 +2,7 @@
 
 A small C11 command-line tool for managing stored mouse and keyboard pairings on classic Logitech Unifying USB receivers. It uses Linux hidraw and libudev, or IOKit HID on macOS, without detaching or seizing the operating system's keyboard and mouse drivers.
 
-The initial allowlist is `046d:c52b` and `046d:c532`, management interface 2, with HID++ report descriptor validation. Bolt, Lightspeed, Nano, Bluetooth, battery reporting, and peripheral settings are outside this version's scope.
+The initial allowlist is `046d:c52b` and `046d:c532`, management interface 2, with HID++ report descriptor validation. `info` reads selected peripheral information, including battery on supported firmware. Bolt, Lightspeed, Nano, Bluetooth, and changing peripheral settings are outside this version's scope.
 
 **Validation status:** the native macOS IOKit backend builds without warnings on macOS 27.0 (arm64). `make test` and `make sanitize` (ASan/UBSan) passed on September 29, 2026, including invalid macOS receiver-ID checks, portable protocol/operation tests, report queue tests, and signal handling tests. These checks do not exercise a physical receiver. Linux build/udev validation and physical receiver validation remain outstanding in this workspace.
 
@@ -76,11 +76,14 @@ Another process can open the same interface. Quit Logitech Options/Options+, Log
 unifyctl help
 unifyctl --help
 unifyctl list --help
+unifyctl info --help
 unifyctl export --help
 unifyctl add --help
 unifyctl remove --help
 
 unifyctl list
+unifyctl info 1
+unifyctl info                                       # List, then select a stored slot
 unifyctl --receiver /dev/hidraw2 list                # Linux
 unifyctl --receiver DevSrvsID:4294968397 list        # macOS
 unifyctl --receiver /dev/hidraw2 --debug list
@@ -100,6 +103,49 @@ Global options may appear before or after the command. Exactly one supported rec
 `list` scans all six stored slots, including gaps. Sleeping and powered-off devices remain listed. An empty receiver prints `No paired devices.` and exits successfully. Output contains slot, stored name, type, WPID, optional serial number, and connection status. WPID identifies a model, not a unique device. Names are receiver-stored codenames, at most 14 bytes. Unsupported optional metadata is `unknown`; communication errors are not silently hidden.
 
 Connection status is `unknown` in read-only listing: the tool does not enable or solicit notifications to obtain it. A lack of notifications is not evidence of disconnection.
+
+`info [SLOT]` prints stored identity followed by battery, connection, power,
+active host channel, current DPI, backlight, and signal quality. An explicit
+slot (1–6) reads only that stored slot and works with redirected streams.
+Without a slot, the command prints the existing inventory and prompts once on
+stderr; stdin and stderr must be terminals. Surrounding whitespace is allowed;
+the choice must be an occupied stored slot, preserving gaps. Empty inventories
+succeed without prompting. Invalid/overlong choices exit 2; unavailable
+interaction or EOF exits 8 and suggests `info SLOT`. Identity is rechecked
+after selection; a changed or empty device record exits 7.
+
+Live reads support HID++ feature protocols 2.x/4.x: battery `1004` and `1000`,
+host channel `1814`, current sensor DPI `2201` and extended X/Y DPI `2202`, and
+configured keyboard backlight enablement `1982` (manual level for revision 3+).
+Coarse battery levels remain words; defaults and supported DPI ranges are not
+reported as current DPI. Backlight configuration does not establish current
+illumination. Host channels are explicitly one-based, independently of receiver
+slots. Older HID++ 1.0 and unimplemented protocol versions retain stored identity
+with unknown live values. This is protocol/fixture coverage, not a physical
+compatibility claim for MX Master 3, MX Keys, or other models.
+
+Every field is printed. `unsupported` means a queried capability is absent or
+explicitly unsupported; `not applicable` reflects the device type; `unknown`
+means no implemented trustworthy observation. Power remains unknown. Signal
+quality remains unknown if `0080` exists, or unsupported if absent; the command
+does not guess units. Voltage-only battery reporting and other backlight
+variants remain unknown. Protocol research notes are currently kept locally in
+`docs/PROTOCOL_INFO.md` and are not included in the repository.
+
+`reachable` requires a selected-peripheral reply. `unreachable` requires an
+explicit selected-slot link-loss notification plus a matched receiver resource
+error; live fields then read `unavailable (device unreachable)`. Notification
+flags are never changed, so such evidence may not arrive. Silence exits 6;
+unexpected errors exit 7, without a partial detail block. Neither proves the
+physical switch is off. Sleeping and switched-off devices can be indistinguishable.
+
+Requests are serial, with 2 seconds per request and a shared 30-second budget
+per hardware phase. Inventory and selected-device queries have separate budgets;
+the prompt has no deadline. There are no retries or state-changing requests.
+Ctrl-C/SIGTERM interrupt the prompt and queries and release the session, returning
+130/143. macOS synchronous writes can delay cancellation or exceed these budgets.
+Observations are sequential, not an atomic snapshot. `--yes` and `--timeout`
+are rejected for info.
 
 `add` opens a pairing window for 1–255 seconds, default 30. Activate the peripheral's Unifying pairing mode when prompted. The tool waits for pairing notifications and verifies a new stored slot; accepting the open-window command is not success. Ctrl-C and SIGTERM attempt bounded cleanup. Individual requests have a 2-second timeout. Pairing verification has a shared 5-second budget and can retry each identical stored-record read once after a reply timeout. This accommodates traffic during device initialization while still checking the echoed record selector. Removal verification and cleanup each retain a 2-second budget. Pairing-state writes are never retried. On macOS, report writes use a synchronous IOKit call with its own transfer timeout, so an in-progress write can delay cancellation or exceed the application-level request and cleanup budgets.
 
@@ -223,9 +269,9 @@ Results go to stdout; prompts, errors, and `--debug` hexadecimal traffic go to s
 | 3 | Missing, ambiguous, unsupported, or incorrectly selected receiver |
 | 4 | Device access or advisory locking failure |
 | 5 | Transport failure or receiver disconnection |
-| 6 | Request or pairing timeout |
+| 6 | Request, hardware phase, or pairing timeout |
 | 7 | Protocol/operation failure, unverified result, or incomplete cleanup after pairing |
-| 8 | Confirmation declined or unavailable |
+| 8 | Confirmation declined/unavailable, or info selection unavailable/EOF |
 | 130 | Cancelled by SIGINT |
 | 143 | Terminated by SIGTERM |
 
