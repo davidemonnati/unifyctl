@@ -4,7 +4,7 @@ CFLAGS ?= -O2 -g
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Wshadow
 BUILD ?= build
 UNAME := $(shell uname -s)
-CORE = src/export.c src/common.c src/cli.c src/hidpp.c src/devices.c src/discovery.c src/signals.c src/report_queue.c src/transport.c src/operations.c
+CORE = src/export.c src/common.c src/cli.c src/hidpp.c src/devices.c src/discovery.c src/signals.c src/report_queue.c src/transport.c src/operations.c src/peripheral.c src/info.c
 ifeq ($(UNAME),Linux)
 BACKEND = src/discovery_linux.c
 CPPFLAGS += $(shell pkg-config --cflags libudev)
@@ -40,12 +40,16 @@ $(BUILD)/test_transport: src/common.c src/signals.c src/transport.c tests/test_t
 $(BUILD)/test_export: $(CORE) tests/mock.c tests/test_export.c $(wildcard src/*.h) tests/mock.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(filter-out src/export.c,$(CORE)) tests/mock.c tests/test_export.c $(LDFLAGS) -o $@
 
-test: all $(BUILD)/test_export $(BUILD)/test_core $(BUILD)/test_operations $(BUILD)/test_transport
+$(BUILD)/test_info: $(CORE) tests/mock.c tests/test_info.c $(wildcard src/*.h) tests/mock.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/mock.c tests/test_info.c $(LDFLAGS) -o $@
+
+test: all $(BUILD)/test_export $(BUILD)/test_core $(BUILD)/test_operations $(BUILD)/test_transport $(BUILD)/test_info
 	python3 tests/test_cli.py $(BUILD)/unifyctl
 	python3 tests/test_export.py $(BUILD)/test_export
 	$(BUILD)/test_core
 	$(BUILD)/test_operations
 	$(BUILD)/test_transport
+	$(BUILD)/test_info
 
 sanitize:
 	$(MAKE) BUILD=build/sanitize CFLAGS='-O1 -g -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -fsanitize=address,undefined -fno-omit-frame-pointer' LDFLAGS='-fsanitize=address,undefined' test

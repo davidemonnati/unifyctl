@@ -50,11 +50,12 @@ int cli_parse(int argc, char **argv, struct options *o, struct error *err) {
         else if (o->command == CMD_NONE) {
             if (!strcmp(arg, "help")) o->command = CMD_HELP;
             else if (!strcmp(arg, "list")) o->command = CMD_LIST;
+            else if (!strcmp(arg, "info")) o->command = CMD_INFO;
             else if (!strcmp(arg, "export")) o->command = CMD_EXPORT;
             else if (!strcmp(arg, "add")) o->command = CMD_ADD;
             else if (!strcmp(arg, "remove")) o->command = CMD_REMOVE;
             else return fail(err, UC_USAGE, 0, 0, "unknown command: %s", arg);
-        } else if (o->command == CMD_REMOVE && !o->slot) {
+        } else if ((o->command == CMD_REMOVE || o->command == CMD_INFO) && !o->slot) {
             if (!number(arg, 6, &o->slot)) return fail(err, UC_USAGE, 0, 0, "slot must be an integer from 1 to 6");
         } else return fail(err, UC_USAGE, 0, 0, "unexpected argument: %s", arg);
     }
@@ -79,6 +80,21 @@ int cli_parse(int argc, char **argv, struct options *o, struct error *err) {
 void cli_help(FILE *out, enum command command) {
     fputs("unifyctl — manage classic Logitech Unifying receiver pairings\n\n", out);
     switch (command) {
+    case CMD_INFO:
+        fputs("Usage: unifyctl [OPTIONS] info [SLOT]\n\n"
+              "Inspect stored identity and read live peripheral information.\n"
+              "  SLOT  Stored receiver slot, integer 1–6.\n"
+              "Without SLOT, list devices and select once using terminal stdin/stderr.\n"
+              "An empty receiver succeeds without prompting. Use info SLOT with pipes.\n"
+              "Reports battery, connection, power, host channel, DPI, backlight and signal.\n"
+              "Availability depends on firmware; unknown does not mean powered off.\n"
+              "Read requests only; no settings or notification flags are changed.\n"
+              "Requests: 2 seconds each, 30 seconds per hardware phase; no retries.\n"
+              "The selection prompt has no deadline. Ctrl-C cancels.\n"
+              "macOS synchronous writes can delay cancellation or exceed deadlines.\n"
+              "Examples: unifyctl info 1\n"
+              "          unifyctl --receiver DevSrvsID:4294968397 info\n", out);
+        break;
     case CMD_LIST:
         fputs("Usage: unifyctl [OPTIONS] list\n\n"
               "List all stored paired devices, including sleeping or powered-off devices.\n"
@@ -118,6 +134,7 @@ void cli_help(FILE *out, enum command command) {
         fputs("Usage: unifyctl [OPTIONS] COMMAND [ARGUMENTS]\n\n"
               "Commands:\n"
               "  list                 List stored pairings (including offline devices).\n"
+              "  info [SLOT]          Inspect a device; prompt if SLOT is omitted.\n"
               "  add [--timeout N]    Pair a device; default 30 seconds, range 1–255.\n"
               "  remove SLOT [--yes]  Unpair slot 1–6; confirms unless --yes is given.\n"
               "  remove --all [--yes] Unpair all devices on the selected receiver.\n"
@@ -141,7 +158,7 @@ void cli_help(FILE *out, enum command command) {
           "and macOS (IOKit HID). Bolt, Lightspeed, and other receiver families\n"
           "are not supported.\n"
           "Exit: 0 success; 1 internal; 2 usage; 3 selection; 4 access; 5 I/O;\n"
-          "      6 timeout; 7 protocol/operation; 8 confirmation refused;\n"
+          "      6 timeout; 7 protocol/operation; 8 interaction unavailable/refused;\n"
           "      130 interrupted; 143 terminated.\n", out);
 }
 

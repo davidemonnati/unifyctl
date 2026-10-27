@@ -5,6 +5,8 @@ import tempfile
 
 binary = sys.argv[1]
 good = [
+    ["info", "--help"], ["info", "1", "--help"], ["info", "06", "--debug", "--help"],
+    ["--receiver", "/no/device", "info", "6", "--help"],
     ["export", "--help"], ["export", "-o", "devices.json", "--help"],
     ["--receiver", "/no/device", "export", "--output", "out.json", "--help"],
     ["help"], ["--help"], ["list", "--help"], ["add", "--help"],
@@ -15,6 +17,10 @@ good = [
     ["--all", "remove", "--help"],
 ]
 bad = [
+    ["info", "0"], ["info", "7"], ["info", "-1"], ["info", "+1"],
+    ["info", "1x"], ["info", ""], ["info", "1", "2"], ["info", "--yes"],
+    ["info", "--timeout", "30"], ["info", "--all"], ["info", "-o", "a"],
+    ["info", "999999999999999999999"],
     ["export"], ["export", "-o"], ["export", "-o", ""],
     ["export", "-o", "--help"], ["export", "-o", "a", "--output", "b"],
     ["list", "-o", "a"], ["export", "-o", "a", "extra"],
@@ -58,7 +64,7 @@ if sys.platform == "darwin":
                "DevSrvsID:0", "DevSrvsID:18446744073709551616",
                "DevSrvsID:18446744073709551615", "DevSrvsID:1"]
     for receiver in invalid:
-        for command in (["list"], ["remove", "1", "--yes"], ["add", "--timeout", "1"]):
+        for command in (["list"], ["info", "1"], ["remove", "1", "--yes"], ["add", "--timeout", "1"]):
             result = subprocess.run([binary, "--receiver", receiver, *command],
                                     capture_output=True, text=True, timeout=10)
             assert result.returncode == 3, (receiver, command, result)
